@@ -116,16 +116,24 @@ CREATE TABLE IF NOT EXISTS referrers (
 CREATE INDEX IF NOT EXISTS idx_referrers_user ON referrers(user_id);
 
 -- ============================================================
--- 첨부파일
+-- 파일 (범용 파일 저장소)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS files (
+  file_key    TEXT PRIMARY KEY,            -- flex 파일 고유 식별자
+  file_name   TEXT,
+  local_path  TEXT,                        -- 로컬 파일 경로
+  source      TEXT NOT NULL DEFAULT 'attachment',  -- attachment, profile, etc.
+  file_size   INTEGER,
+  mime_type   TEXT
+);
+
+-- ============================================================
+-- 첨부파일 (인스턴스 ↔ 파일 연결)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS attachments (
   instance_id TEXT NOT NULL REFERENCES instances(id),
-  file_name   TEXT NOT NULL,
-  file_key    TEXT,
-  file_size   INTEGER,
-  mime_type   TEXT,
-  local_path  TEXT,
-  PRIMARY KEY (instance_id, file_name)
+  file_key    TEXT NOT NULL REFERENCES files(file_key),
+  PRIMARY KEY (instance_id, file_key)
 );
 
 -- ============================================================

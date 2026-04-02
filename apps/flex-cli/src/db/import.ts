@@ -79,9 +79,13 @@ export async function importToSqlite(
       INSERT OR REPLACE INTO approval_lines (instance_id, step_order, seq, type, approver_id, approver_name, status, processed_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `),
-    attachment: db.prepare(`
-      INSERT OR REPLACE INTO attachments (instance_id, file_name, file_key, file_size, mime_type, local_path)
+    file: db.prepare(`
+      INSERT OR REPLACE INTO files (file_key, file_name, local_path, source, file_size, mime_type)
       VALUES (?, ?, ?, ?, ?, ?)
+    `),
+    attachment: db.prepare(`
+      INSERT OR REPLACE INTO attachments (instance_id, file_key)
+      VALUES (?, ?)
     `),
     referrer: db.prepare(`
       INSERT OR REPLACE INTO referrers (instance_id, user_id, user_name, type)
@@ -304,19 +308,18 @@ function importInstance(
     result.approvalLines++;
   }
 
-  // Attachments
+  // Attachments → files + attachments
   const attachments = data.attachments ?? [];
   const rawAttachments = doc?.attachments ?? [];
   for (let i = 0; i < attachments.length; i++) {
     const att = attachments[i];
     const rawAtt = rawAttachments[i];
-    stmts.attachment.run(
-      data.id, att.fileName,
-      rawAtt?.file?.fileKey ?? null,
-      att.fileSize ?? null,
-      att.mimeType ?? null,
-      att.localPath ?? null,
+    const fileKey = rawAtt?.file?.fileKey ?? `${data.id}/${att.fileName}`;
+    stmts.file.run(
+      fileKey, att.fileName, att.localPath ?? null,
+      "attachment", att.fileSize ?? null, att.mimeType ?? null,
     );
+    stmts.attachment.run(data.id, fileKey);
     result.attachments++;
   }
 
