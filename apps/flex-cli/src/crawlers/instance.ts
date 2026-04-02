@@ -67,9 +67,17 @@ export async function crawlInstances(
         logger.info(`총 ${page.total}건의 문서 발견`);
       }
 
+      let newInPage = 0;
       for (const doc of docs) {
-        result.totalCount++;
         const docKey = doc.document.documentKey;
+
+        // 중복 스킵
+        if (collectedKeys.has(docKey)) {
+          continue;
+        }
+
+        result.totalCount++;
+        newInPage++;
 
         try {
           logger.progress("인스턴스 수집", result.successCount + result.failureCount + 1, page.total);
@@ -91,6 +99,7 @@ export async function crawlInstances(
           collectedKeys.add(docKey);
           result.successCount++;
         } catch (error) {
+          collectedKeys.add(docKey); // 실패해도 재시도 방지
           result.failureCount++;
           result.errors.push({
             target: `instance:${docKey}`,
@@ -106,9 +115,15 @@ export async function crawlInstances(
         await delay(config.requestDelayMs);
       }
 
-      hasMore = page.hasNext && docs.length > 0;
-      if (hasMore) {
-        lastDocumentKey = docs[docs.length - 1].document.documentKey;
+      // 이 페이지에 새 문서가 없으면 커서가 전진 안 하는 것 → 종료
+      if (newInPage === 0) {
+        logger.warn("새 문서 없음 — 페이지네이션 종료");
+        hasMore = false;
+      } else {
+        hasMore = page.hasNext && docs.length > 0;
+        if (hasMore) {
+          lastDocumentKey = docs[docs.length - 1].document.documentKey;
+        }
       }
     }
   } catch (error) {
