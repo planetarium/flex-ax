@@ -1,5 +1,5 @@
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
-import type { CrawlerConfig } from "../config/index.js";
+import type { Config } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
 
 export interface AuthContext {
@@ -10,7 +10,7 @@ export interface AuthContext {
 }
 
 export async function authenticate(
-  config: CrawlerConfig,
+  config: Config,
   logger: Logger,
 ): Promise<AuthContext> {
   if (config.authMode === "sso") {
@@ -19,14 +19,10 @@ export async function authenticate(
   return authenticateCredentials(config, logger);
 }
 
-async function launchBrowser(
-  config: CrawlerConfig,
-): Promise<{ browser: Browser; context: BrowserContext; page: Page; authHeaders: Record<string, string> }> {
-  const browser = await chromium.launch({ headless: config.headless });
-  const context = await browser.newContext();
-  const page = await context.newPage();
-  const authHeaders: Record<string, string> = {};
-
+function setupHeaderCapture(
+  page: Page,
+  authHeaders: Record<string, string>,
+): void {
   page.on("request", (request) => {
     const url = request.url();
     if (url.includes("flex.team") && url.includes("/api/")) {
@@ -38,8 +34,6 @@ async function launchBrowser(
       }
     }
   });
-
-  return { browser, context, page, authHeaders };
 }
 
 async function collectCookies(
@@ -53,29 +47,30 @@ async function collectCookies(
 }
 
 async function authenticateCredentials(
-  config: CrawlerConfig,
+  config: Config,
   logger: Logger,
 ): Promise<AuthContext> {
   logger.info("브라우저 시작...");
-  const { browser, context, page, authHeaders } = await launchBrowser(config);
+  const browser = await chromium.launch({ headless: config.headless });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const authHeaders: Record<string, string> = {};
+  setupHeaderCapture(page, authHeaders);
 
   logger.info("flex 로그인 페이지 이동...");
   await page.goto(`${config.flexBaseUrl}/login`, { waitUntil: "networkidle" });
 
-  // Step 1: 이메일 입력 후 Enter (다음 단계 전환)
   logger.info("이메일 입력...");
   const emailInput = page.locator('input[type="email"]');
   await emailInput.fill(config.flexEmail);
   await emailInput.press("Enter");
 
-  // Step 2: 비밀번호 필드 나타남 → 입력 → 로그인하기 클릭
   logger.info("비밀번호 입력...");
   const passwordInput = page.locator('input[type="password"]');
   await passwordInput.waitFor({ state: "visible", timeout: 10000 });
   await passwordInput.fill(config.flexPassword);
   await page.locator('button[type="submit"]').click();
 
-  // 로그인 완료 대기
   logger.info("로그인 완료 대기...");
   await page.waitForURL((url) => !url.toString().includes("/auth/login"), {
     timeout: 30000,
@@ -84,64 +79,44 @@ async function authenticateCredentials(
   await page.waitForLoadState("networkidle");
   await collectCookies(context, authHeaders);
 
-  logger.info("로그인 성공", { url: page.url() });
+  console.log("[FLEX-AX:AUTH] 로그인 성공");
   return { browser, context, page, authHeaders };
 }
 
 async function authenticateSSO(
-  config: CrawlerConfig,
+  config: Config,
   logger: Logger,
 ): Promise<AuthContext> {
-  const userDataDir = config.chromeUserDataDir || getDefaultChromeUserDataDir();
-  logger.info("SSO 모드: 기존 Chrome 프로필의 세션을 사용합니다.", { userDataDir });
+  logger.info("SSO 모드: 브라우저를 열어 수동 로그인을 진행합니다.");
 
+  const browser = await chromium.launch({ headless: false });
+  const context = await browser.newContext();
+  const page = await context.newPage();
   const authHeaders: Record<string, string> = {};
-  const context = await chromium.launchPersistentContext(userDataDir, {
-    headless: false, // SSO 모드에서는 항상 브라우저 표시
-    channel: "chrome", // 설치된 Chrome 사용
-  });
+  setupHeaderCapture(page, authHeaders);
 
-  const page = context.pages()[0] ?? await context.newPage();
+  await page.goto(`${config.flexBaseUrl}/login`, { waitUntil: "domcontentloaded", timeout: 30000 });
 
-  page.on("request", (request) => {
-    const url = request.url();
-    if (url.includes("flex.team") && url.includes("/api/")) {
-      const headers = request.headers();
-      for (const key of ["authorization", "cookie", "x-csrf-token"]) {
-        if (headers[key]) {
-          authHeaders[key] = headers[key];
-        }
-      }
-    }
-  });
+  console.log("[FLEX-AX:AUTH] 브라우저에서 로그인을 완료해 주세요");
 
-  // flex.team으로 이동 — 이미 로그인되어 있으면 바로 대시보드로 감
-  await page.goto(`${config.flexBaseUrl}`, { waitUntil: "networkidle" });
+  // 로그인 완료 대기 (최대 5분)
+  await page.waitForURL(
+    (url) => {
+      const s = url.toString();
+      return (
+        !s.includes("/login") &&
+        !s.includes("/auth/") &&
+        !s.includes("accounts.google.com")
+      );
+    },
+    { timeout: 300_000 },
+  );
 
-  // 로그인 페이지로 리다이렉트된 경우 수동 로그인 대기
-  const currentUrl = page.url();
-  if (currentUrl.includes("/login") || currentUrl.includes("/auth/") || currentUrl.includes("accounts.google.com")) {
-    logger.info("로그인이 필요합니다. 브라우저에서 로그인을 완료해 주세요. (최대 5분 대기)");
-    await page.waitForURL(
-      (url) => {
-        const s = url.toString();
-        return (
-          !s.includes("/login") &&
-          !s.includes("/auth/") &&
-          !s.includes("accounts.google.com")
-        );
-      },
-      { timeout: 300_000 },
-    );
-  }
-
-  await page.waitForLoadState("networkidle");
+  await page.waitForLoadState("networkidle").catch(() => {});
   await collectCookies(context, authHeaders);
 
-  logger.info("SSO 로그인 성공", { url: page.url() });
-
-  // launchPersistentContext는 Browser 객체가 없으므로 더미로 처리
-  return { browser: context.browser()!, context, page, authHeaders };
+  console.log("[FLEX-AX:AUTH] 로그인 성공");
+  return { browser, context, page, authHeaders };
 }
 
 function getDefaultChromeUserDataDir(): string {
@@ -153,17 +128,15 @@ function getDefaultChromeUserDataDir(): string {
   if (platform === "win32") {
     return `${process.env.LOCALAPPDATA}\\Google\\Chrome\\User Data`;
   }
-  // linux
   return `${home}/.config/google-chrome`;
 }
 
 export async function ensureAuthenticated(
   authCtx: AuthContext,
-  config: CrawlerConfig,
+  config: Config,
   logger: Logger,
 ): Promise<void> {
   try {
-    // 간단한 API 호출로 세션 유효성 확인
     const response = await authCtx.page.goto(`${config.flexBaseUrl}/api/v2/core/me`, {
       waitUntil: "domcontentloaded",
       timeout: 10000,
@@ -173,19 +146,13 @@ export async function ensureAuthenticated(
       logger.warn("세션 만료 감지, 재인증 시도...");
       await cleanup(authCtx);
       const newCtx = await authenticate(config, logger);
-      authCtx.browser = newCtx.browser;
-      authCtx.context = newCtx.context;
-      authCtx.page = newCtx.page;
-      authCtx.authHeaders = newCtx.authHeaders;
+      Object.assign(authCtx, newCtx);
     }
   } catch {
     logger.warn("세션 확인 실패, 재인증 시도...");
     await cleanup(authCtx);
     const newCtx = await authenticate(config, logger);
-    authCtx.browser = newCtx.browser;
-    authCtx.context = newCtx.context;
-    authCtx.page = newCtx.page;
-    authCtx.authHeaders = newCtx.authHeaders;
+    Object.assign(authCtx, newCtx);
   }
 }
 
