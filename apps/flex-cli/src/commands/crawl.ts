@@ -1,8 +1,9 @@
+import { readFile } from "node:fs/promises";
 import { loadConfig } from "../config/index.js";
 import { createLogger } from "../logger/index.js";
 import { authenticate, cleanup } from "../auth/index.js";
 import { createStorageWriter, type CrawlReport } from "../storage/index.js";
-import { loadCatalog } from "../discovery/catalog.js";
+import type { ApiCatalog } from "../types/catalog.js";
 import { crawlTemplates } from "../crawlers/template.js";
 import { crawlInstances } from "../crawlers/instance.js";
 import { crawlAttendanceApprovals } from "../crawlers/attendance.js";
@@ -23,7 +24,13 @@ export async function runCrawl(): Promise<void> {
   }
 
   // 카탈로그 로드 (없으면 하드코딩 폴백)
-  const catalog = await loadCatalog(config.catalogPath);
+  let catalog: ApiCatalog | null = null;
+  try {
+    const content = await readFile(config.catalogPath, "utf-8");
+    catalog = JSON.parse(content) as ApiCatalog;
+  } catch {
+    // 파일 없으면 null
+  }
   if (catalog) {
     logger.info("카탈로그 로드 완료", {
       entries: catalog.entries.length,
