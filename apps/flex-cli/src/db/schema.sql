@@ -67,6 +67,8 @@ CREATE INDEX IF NOT EXISTS idx_instances_doc_number      ON instances(document_n
 -- ============================================================
 -- 필드값 (EAV)
 -- ============================================================
+-- SELECT/MULTISELECT의 value_text는 JSON 배열 문자열 (예: '["식대비"]')
+-- 쿼리 시 LIKE '%값%' 사용 권장
 CREATE TABLE IF NOT EXISTS field_values (
   instance_id  TEXT NOT NULL REFERENCES instances(id),
   field_name   TEXT NOT NULL,
@@ -101,6 +103,19 @@ CREATE INDEX IF NOT EXISTS idx_al_approver ON approval_lines(approver_id, status
 CREATE INDEX IF NOT EXISTS idx_al_status   ON approval_lines(status, processed_at);
 
 -- ============================================================
+-- 참조자 (결재 열람자)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS referrers (
+  instance_id TEXT NOT NULL REFERENCES instances(id),
+  user_id     TEXT REFERENCES users(id),
+  user_name   TEXT,                       -- 정규화 전 폴백용
+  type        TEXT,                       -- USER, RELATIVE_DEPT_HEAD
+  PRIMARY KEY (instance_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_referrers_user ON referrers(user_id);
+
+-- ============================================================
 -- 첨부파일
 -- ============================================================
 CREATE TABLE IF NOT EXISTS attachments (
@@ -124,7 +139,8 @@ CREATE TABLE IF NOT EXISTS comments (
   type         TEXT NOT NULL,             -- WRITE, APPROVE, CANCEL, NORMAL, UPDATE
   content      TEXT,
   is_system    INTEGER DEFAULT 0,         -- [PG] → BOOLEAN DEFAULT false
-  created_at   TEXT NOT NULL              -- [PG] → TIMESTAMPTZ
+  created_at   TEXT NOT NULL,             -- [PG] → TIMESTAMPTZ
+  updated_at   TEXT                       -- [PG] → TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_comments_instance ON comments(instance_id, created_at);
@@ -137,6 +153,7 @@ CREATE TABLE IF NOT EXISTS attendance (
   id            TEXT PRIMARY KEY,
   user_id       TEXT REFERENCES users(id),
   type          TEXT NOT NULL,            -- ANNUAL, CUSTOM, etc.
+  policy_id     TEXT,                     -- 휴가 정책 ID (timeOffPolicyId)
   date_from     TEXT,                     -- [PG] → DATE
   date_to       TEXT,                     -- [PG] → DATE
   days          REAL,                     -- 사용 일수 (0.5 = 반차)

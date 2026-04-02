@@ -83,13 +83,17 @@ export async function importToSqlite(
       INSERT OR REPLACE INTO attachments (instance_id, file_name, file_key, file_size, mime_type, local_path)
       VALUES (?, ?, ?, ?, ?, ?)
     `),
+    referrer: db.prepare(`
+      INSERT OR REPLACE INTO referrers (instance_id, user_id, user_name, type)
+      VALUES (?, ?, ?, ?)
+    `),
     comment: db.prepare(`
-      INSERT OR REPLACE INTO comments (id, instance_id, author_id, author_name, type, content, is_system, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO comments (id, instance_id, author_id, author_name, type, content, is_system, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
     attendance: db.prepare(`
-      INSERT OR REPLACE INTO attendance (id, user_id, type, date_from, date_to, days, minutes, status, applied_at, raw)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO attendance (id, user_id, type, policy_id, date_from, date_to, days, minutes, status, applied_at, raw)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
     user: db.prepare(`
       INSERT OR REPLACE INTO users (id, name, aliases)
@@ -165,6 +169,7 @@ export async function importToSqlite(
 
       stmts.attendance.run(
         data.id, data.applicant?.id ?? null, data.type,
+        data.details?.policyId ?? data._raw?.timeOffPolicyId ?? null,
         data.details?.dateFrom ?? data.appliedAt ?? null,
         data.details?.dateTo ?? null,
         data.details?.days ?? null,
@@ -315,6 +320,18 @@ function importInstance(
     result.attachments++;
   }
 
+  // Referrers (from raw)
+  const rawReferrers = raw?.approvalProcess?.referrers ?? [];
+  for (const ref of rawReferrers) {
+    const target = ref.resolvedTarget;
+    const refUserId = target?.userIdHashes?.[0] ?? null;
+    const refName = target?.displayName ?? "";
+    upsertUser(refUserId ?? undefined, refName);
+    if (refUserId) {
+      stmts.referrer.run(data.id, refUserId, refName, target?.type ?? null);
+    }
+  }
+
   // Comments (from raw)
   const rawComments = doc?.comments ?? [];
   for (const c of rawComments) {
@@ -325,6 +342,7 @@ function importInstance(
       c.type, c.content ?? null,
       c.writtenBySystem ? 1 : 0,
       c.createdAt,
+      c.updatedAt ?? null,
     );
     result.comments++;
   }
