@@ -303,6 +303,7 @@ async function processAttachments(
         const buffer = await authCtx.page.evaluate(
           async ([url, headers]) => {
             const res = await fetch(url, { headers: headers as Record<string, string> });
+            if (!res.ok) throw new Error(`HTTP ${res.status}: ${url}`);
             const ab = await res.arrayBuffer();
             return Array.from(new Uint8Array(ab));
           },

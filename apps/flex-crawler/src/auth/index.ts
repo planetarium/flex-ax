@@ -140,8 +140,7 @@ async function authenticateSSO(
 
   logger.info("SSO 로그인 성공", { url: page.url() });
 
-  // launchPersistentContext는 Browser 객체가 없으므로 더미로 처리
-  return { browser: context.browser()!, context, page, authHeaders };
+  return { browser: context.browser(), context, page, authHeaders };
 }
 
 function getDefaultChromeUserDataDir(): string {

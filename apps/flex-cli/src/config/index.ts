@@ -21,17 +21,7 @@ const configSchema = z
       .enum(["true", "false"])
       .transform((v) => v === "true")
       .default("true"),
-  })
-  .refine(
-    (c) =>
-      c.authMode === "sso" ||
-      c.authMode === "playwriter" ||
-      (c.flexEmail.length > 0 && c.flexPassword.length > 0),
-    {
-      message:
-        "FLEX_EMAIL and FLEX_PASSWORD are required when AUTH_MODE is 'credentials'",
-    },
-  );
+  });
 
 export type Config = z.infer<typeof configSchema>;
 

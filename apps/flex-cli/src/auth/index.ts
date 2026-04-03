@@ -54,6 +54,9 @@ async function authenticateCredentials(
   config: Config,
   logger: Logger,
 ): Promise<AuthContext> {
+  if (!config.flexEmail || !config.flexPassword) {
+    throw new Error("FLEX_EMAIL and FLEX_PASSWORD are required when AUTH_MODE is 'credentials'");
+  }
   logger.info("브라우저 시작...");
   const browser = await chromium.launch({ headless: config.headless });
   const context = await browser.newContext();

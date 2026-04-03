@@ -52,7 +52,8 @@ export function createStorageWriter(outputDir: string, catalogPath: string): Sto
     async saveAttachment(instanceId, fileName, data) {
       const dir = path.join(outputDir, "attachments", instanceId);
       await ensureDir(dir);
-      const filePath = path.join(dir, fileName);
+      const safeName = path.basename(fileName); // 경로 traversal 방지
+      const filePath = path.join(dir, safeName);
       await writeFile(filePath, data);
       return filePath;
     },

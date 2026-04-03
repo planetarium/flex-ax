@@ -33,9 +33,15 @@ export async function importToSqlite(
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = OFF"); // 임포트 순서 무관하게 처리, 완료 후 체크
 
-  // schema.sql은 src/db/에 있음. dist에서 실행될 때도 src를 참조
-  const projectRoot = path.resolve(__dirname, "../..");
-  const schemaPath = path.join(projectRoot, "src", "db", "schema.sql");
+  // schema.sql은 이 파일과 같은 디렉토리에 있음
+  // tsx: src/db/import.ts → src/db/schema.sql
+  // tsc: dist/db/import.js → src/db/schema.sql (dist에는 복사 안 되므로 src 폴백)
+  let schemaPath = path.join(__dirname, "schema.sql");
+  try {
+    await readFile(schemaPath, "utf-8");
+  } catch {
+    schemaPath = path.resolve(__dirname, "../../src/db/schema.sql");
+  }
   const schema = await readFile(schemaPath, "utf-8");
   db.exec(schema);
 
@@ -211,6 +217,12 @@ export async function importToSqlite(
     stmts.meta.run("crawl_duration_ms", String(report.durationMs ?? 0));
   } catch {
     // 없으면 무시
+  }
+
+  // FK 무결성 체크
+  const fkErrors = db.pragma("foreign_key_check") as unknown[];
+  if (fkErrors.length > 0) {
+    logger.warn(`FK 무결성 위반 ${fkErrors.length}건 (참조 누락)`);
   }
 
   db.close();

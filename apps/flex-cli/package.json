@@ -9,7 +9,6 @@
   },
   "scripts": {
     "start": "tsx src/cli.ts",
-    "discover": "tsx src/cli.ts discover",
     "crawl": "tsx src/cli.ts crawl",
     "install-skills": "tsx src/cli.ts install-skills",
     "build": "tsc",
