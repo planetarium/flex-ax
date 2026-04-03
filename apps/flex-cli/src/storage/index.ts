@@ -38,21 +38,25 @@ async function writeJson(filePath: string, data: unknown): Promise<void> {
 export function createStorageWriter(outputDir: string, catalogPath: string): StorageWriter {
   return {
     async saveTemplate(template) {
-      await writeJson(path.join(outputDir, "templates", `${template.id}.json`), template);
+      const safeId = path.basename(template.id);
+      await writeJson(path.join(outputDir, "templates", `${safeId}.json`), template);
     },
 
     async saveInstance(instance) {
-      await writeJson(path.join(outputDir, "instances", `${instance.id}.json`), instance);
+      const safeId = path.basename(instance.id);
+      await writeJson(path.join(outputDir, "instances", `${safeId}.json`), instance);
     },
 
     async saveAttendanceApproval(approval) {
-      await writeJson(path.join(outputDir, "attendance", `${approval.id}.json`), approval);
+      const safeId = path.basename(approval.id);
+      await writeJson(path.join(outputDir, "attendance", `${safeId}.json`), approval);
     },
 
     async saveAttachment(instanceId, fileName, data) {
-      const dir = path.join(outputDir, "attachments", instanceId);
+      const safeInstanceId = path.basename(instanceId);
+      const dir = path.join(outputDir, "attachments", safeInstanceId);
       await ensureDir(dir);
-      const safeName = path.basename(fileName); // 경로 traversal 방지
+      const safeName = path.basename(fileName);
       const filePath = path.join(dir, safeName);
       await writeFile(filePath, data);
       return filePath;

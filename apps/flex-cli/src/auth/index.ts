@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import type { Config } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
@@ -26,16 +26,23 @@ export async function authenticate(
 function setupHeaderCapture(
   page: Page,
   authHeaders: Record<string, string>,
+  baseUrl: string,
 ): void {
+  const baseHostname = new URL(baseUrl).hostname;
   page.on("request", (request) => {
     const url = request.url();
-    if (url.includes("flex.team") && url.includes("/api/")) {
-      const headers = request.headers();
-      for (const key of ["authorization", "cookie", "x-csrf-token"]) {
-        if (headers[key]) {
-          authHeaders[key] = headers[key];
+    try {
+      const reqHostname = new URL(url).hostname;
+      if (reqHostname === baseHostname && url.includes("/api/")) {
+        const headers = request.headers();
+        for (const key of ["authorization", "cookie", "x-csrf-token"]) {
+          if (headers[key]) {
+            authHeaders[key] = headers[key];
+          }
         }
       }
+    } catch {
+      // invalid URL, skip
     }
   });
 }
@@ -62,7 +69,7 @@ async function authenticateCredentials(
   const context = await browser.newContext();
   const page = await context.newPage();
   const authHeaders: Record<string, string> = {};
-  setupHeaderCapture(page, authHeaders);
+  setupHeaderCapture(page, authHeaders, config.flexBaseUrl);
 
   logger.info("flex 로그인 페이지 이동...");
   await page.goto(`${config.flexBaseUrl}/login`, { waitUntil: "networkidle" });
@@ -100,7 +107,7 @@ async function authenticateSSO(
   const context = await browser.newContext();
   const page = await context.newPage();
   const authHeaders: Record<string, string> = {};
-  setupHeaderCapture(page, authHeaders);
+  setupHeaderCapture(page, authHeaders, config.flexBaseUrl);
 
   await page.goto(`${config.flexBaseUrl}/login`, { waitUntil: "domcontentloaded", timeout: 30000 });
 
@@ -136,7 +143,7 @@ async function authenticatePlaywriter(
   let sessionId = config.playwriterSession;
   if (!sessionId) {
     logger.info("Playwriter 세션 생성 중...");
-    const output = execSync("playwriter session new", {
+    const output = execFileSync("playwriter", ["session", "new"], {
       encoding: "utf-8",
       timeout: 30000,
     });
@@ -148,12 +155,17 @@ async function authenticatePlaywriter(
     logger.info(`Playwriter 세션: ${sessionId}`);
   }
 
-  // 2. Playwriter로 flex.team 이동 + 쿠키 추출
+  // 2. Playwriter로 이동 + 쿠키 추출
+  // sessionId 검증 (영数字/ハイフンのみ)
+  if (!/^[\w-]+$/.test(sessionId)) {
+    throw new Error(`Invalid session ID: ${sessionId}`);
+  }
   const cookieScript = `await page.goto('${config.flexBaseUrl}'); const cookies = await page.evaluate(() => document.cookie); return cookies;`;
-  const rawOutput = execSync(
-    `playwriter -s ${sessionId} --timeout 30000 -e "${cookieScript.replace(/"/g, '\\"')}"`,
-    { encoding: "utf-8", timeout: 40000 },
-  );
+  const rawOutput = execFileSync("playwriter", [
+    "-s", sessionId,
+    "--timeout", "30000",
+    "-e", cookieScript,
+  ], { encoding: "utf-8", timeout: 40000 });
   const cookieStr = rawOutput.replace("[return value] ", "").trim();
 
   if (!cookieStr) {
@@ -183,7 +195,7 @@ async function authenticatePlaywriter(
   const authHeaders: Record<string, string> = {
     cookie: cookieStr,
   };
-  setupHeaderCapture(page, authHeaders);
+  setupHeaderCapture(page, authHeaders, config.flexBaseUrl);
 
   // 4. 쿠키가 유효한지 확인
   await page.goto(config.flexBaseUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
@@ -196,18 +208,6 @@ async function authenticatePlaywriter(
 
   console.log("[FLEX-AX:AUTH] Playwriter 세션으로 로그인 성공");
   return { browser, context, page, authHeaders };
-}
-
-function getDefaultChromeUserDataDir(): string {
-  const platform = process.platform;
-  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
-  if (platform === "darwin") {
-    return `${home}/Library/Application Support/Google/Chrome`;
-  }
-  if (platform === "win32") {
-    return `${process.env.LOCALAPPDATA}\\Google\\Chrome\\User Data`;
-  }
-  return `${home}/.config/google-chrome`;
 }
 
 export async function ensureAuthenticated(

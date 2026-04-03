@@ -33,16 +33,21 @@ export async function importToSqlite(
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = OFF"); // 임포트 순서 무관하게 처리, 완료 후 체크
 
-  // schema.sql은 이 파일과 같은 디렉토리에 있음
-  // tsx: src/db/import.ts → src/db/schema.sql
-  // tsc: dist/db/import.js → src/db/schema.sql (dist에는 복사 안 되므로 src 폴백)
-  let schemaPath = path.join(__dirname, "schema.sql");
-  try {
-    await readFile(schemaPath, "utf-8");
-  } catch {
-    schemaPath = path.resolve(__dirname, "../../src/db/schema.sql");
+  // schema.sql 경로: 같은 디렉토리 → src 폴백 → 에러
+  const schemaCandidates = [
+    path.join(__dirname, "schema.sql"),
+    path.resolve(__dirname, "../../src/db/schema.sql"),
+  ];
+  let schema = "";
+  for (const candidate of schemaCandidates) {
+    try {
+      schema = await readFile(candidate, "utf-8");
+      break;
+    } catch { /* try next */ }
   }
-  const schema = await readFile(schemaPath, "utf-8");
+  if (!schema) {
+    throw new Error(`schema.sql을 찾을 수 없습니다: ${schemaCandidates.join(", ")}`);
+  }
   db.exec(schema);
 
   // 사용자 수집용
@@ -280,7 +285,9 @@ function importInstance(
     const currency = fieldCurrency.get(f.fieldName) ?? null;
 
     if (f.fieldType === "AMOUNT_OF_MONEY" || f.fieldType === "NUMBER") {
-      const n = parseFloat(valueStr);
+      // 통화 기호, 천단위 구분자 제거 후 파싱
+      const cleaned = valueStr.replace(/[^\d.\-]/g, "");
+      const n = parseFloat(cleaned);
       if (!isNaN(n)) valueNumber = n;
     }
     if (f.fieldType === "DATE" && /^\d{4}-\d{2}-\d{2}/.test(valueStr)) {

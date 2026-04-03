@@ -62,7 +62,7 @@ export async function crawlAttendanceApprovals(
             type: String(item.type ?? item.category ?? endpoint.id),
             applicant: {
               name: String((item.applicant as Record<string, unknown>)?.name ?? (item.requester as Record<string, unknown>)?.name ?? "unknown"),
-              id: String((item.applicant as Record<string, unknown>)?.idHash ?? ""),
+              id: ((item.applicant as Record<string, unknown>)?.idHash as string) || undefined,
             },
             appliedAt: String(item.appliedAt ?? item.requestedAt ?? item.createdAt ?? ""),
             details: extractDetails(item),

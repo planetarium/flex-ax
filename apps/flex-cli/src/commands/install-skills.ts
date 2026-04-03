@@ -9,8 +9,14 @@ export async function runInstallSkills(): Promise<void> {
   const projectRoot = findProjectRoot(process.cwd());
   const skillsTarget = path.join(projectRoot, ".claude", "skills");
 
-  await mkdir(skillsTarget, { recursive: true });
+  try {
+    accessSync(skillsSource);
+  } catch {
+    console.error(`[FLEX-AX:ERROR] 스킬 소스 디렉토리를 찾을 수 없습니다: ${skillsSource}`);
+    process.exit(1);
+  }
 
+  await mkdir(skillsTarget, { recursive: true });
   await cp(skillsSource, skillsTarget, { recursive: true });
 
   console.log(`[FLEX-AX:INSTALL] 스킬이 ${skillsTarget}에 설치되었습니다`);

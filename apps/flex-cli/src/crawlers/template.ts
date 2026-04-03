@@ -59,6 +59,10 @@ export async function crawlTemplates(
         await storage.saveTemplate(template);
         result.successCount++;
       } catch (error) {
+        // 상세 실패 — 목록 데이터로 저장 시도하되, 에러는 기록
+        logger.warn(`양식 상세 조회 실패 (목록 데이터로 저장): ${raw.name}`, {
+          error: error instanceof Error ? error.message : String(error),
+        });
         try {
           const template = mapTemplate(raw, null);
           await storage.saveTemplate(template);

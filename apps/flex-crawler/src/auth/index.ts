@@ -27,15 +27,21 @@ async function launchBrowser(
   const page = await context.newPage();
   const authHeaders: Record<string, string> = {};
 
+  const baseHostname = new URL(config.flexBaseUrl).hostname;
   page.on("request", (request) => {
     const url = request.url();
-    if (url.includes("flex.team") && url.includes("/api/")) {
-      const headers = request.headers();
-      for (const key of ["authorization", "cookie", "x-csrf-token"]) {
-        if (headers[key]) {
-          authHeaders[key] = headers[key];
+    try {
+      const reqHostname = new URL(url).hostname;
+      if (reqHostname === baseHostname && url.includes("/api/")) {
+        const headers = request.headers();
+        for (const key of ["authorization", "cookie", "x-csrf-token"]) {
+          if (headers[key]) {
+            authHeaders[key] = headers[key];
+          }
         }
       }
+    } catch {
+      // invalid URL, skip
     }
   });
 
