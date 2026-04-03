@@ -2,7 +2,8 @@ import { z } from "zod";
 
 const configSchema = z
   .object({
-    authMode: z.enum(["credentials", "sso"]).default("credentials"),
+    authMode: z.enum(["credentials", "sso", "playwriter"]).default("credentials"),
+    playwriterSession: z.string().default(""),
     chromeUserDataDir: z.string().default(""),
     flexEmail: z.string().default(""),
     flexPassword: z.string().default(""),
@@ -24,6 +25,7 @@ const configSchema = z
   .refine(
     (c) =>
       c.authMode === "sso" ||
+      c.authMode === "playwriter" ||
       (c.flexEmail.length > 0 && c.flexPassword.length > 0),
     {
       message:
@@ -36,6 +38,7 @@ export type Config = z.infer<typeof configSchema>;
 export function loadConfig(): Config {
   return configSchema.parse({
     authMode: process.env.AUTH_MODE || undefined,
+    playwriterSession: process.env.PLAYWRITER_SESSION || undefined,
     chromeUserDataDir: process.env.CHROME_USER_DATA_DIR || undefined,
     flexEmail: process.env.FLEX_EMAIL || undefined,
     flexPassword: process.env.FLEX_PASSWORD || undefined,

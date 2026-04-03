@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import type { Config } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
@@ -13,6 +14,9 @@ export async function authenticate(
   config: Config,
   logger: Logger,
 ): Promise<AuthContext> {
+  if (config.authMode === "playwriter") {
+    return authenticatePlaywriter(config, logger);
+  }
   if (config.authMode === "sso") {
     return authenticateSSO(config, logger);
   }
@@ -116,6 +120,78 @@ async function authenticateSSO(
   await collectCookies(context, authHeaders);
 
   console.log("[FLEX-AX:AUTH] 로그인 성공");
+  return { browser, context, page, authHeaders };
+}
+
+async function authenticatePlaywriter(
+  config: Config,
+  logger: Logger,
+): Promise<AuthContext> {
+  logger.info("Playwriter 모드: 기존 Chrome 세션에서 쿠키를 가져옵니다.");
+
+  // 1. Playwriter 세션 확보 (기존 세션 ID 또는 새로 생성)
+  let sessionId = config.playwriterSession;
+  if (!sessionId) {
+    logger.info("Playwriter 세션 생성 중...");
+    const output = execSync("playwriter session new", {
+      encoding: "utf-8",
+      timeout: 30000,
+    });
+    const match = output.match(/Session\s+(\S+)\s+created/);
+    if (!match) {
+      throw new Error(`Playwriter 세션 생성 실패: ${output}`);
+    }
+    sessionId = match[1];
+    logger.info(`Playwriter 세션: ${sessionId}`);
+  }
+
+  // 2. Playwriter로 flex.team 이동 + 쿠키 추출
+  const cookieScript = `await page.goto('${config.flexBaseUrl}'); const cookies = await page.evaluate(() => document.cookie); return cookies;`;
+  const rawOutput = execSync(
+    `playwriter -s ${sessionId} --timeout 30000 -e "${cookieScript.replace(/"/g, '\\"')}"`,
+    { encoding: "utf-8", timeout: 40000 },
+  );
+  const cookieStr = rawOutput.replace("[return value] ", "").trim();
+
+  if (!cookieStr) {
+    throw new Error("Playwriter에서 쿠키를 가져올 수 없습니다. Chrome에서 flex.team에 로그인되어 있는지 확인하세요.");
+  }
+
+  logger.info(`쿠키 ${cookieStr.split(";").length}개 확보`);
+
+  // 3. headless 브라우저에 쿠키 주입
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+
+  // document.cookie 문자열을 파싱하여 Playwright 쿠키로 변환
+  const parsedCookies = cookieStr.split(";").map((pair) => {
+    const [name, ...rest] = pair.trim().split("=");
+    return {
+      name: name.trim(),
+      value: rest.join("="),
+      domain: new URL(config.flexBaseUrl).hostname,
+      path: "/",
+    };
+  }).filter((c) => c.name && c.value);
+
+  await context.addCookies(parsedCookies);
+
+  const page = await context.newPage();
+  const authHeaders: Record<string, string> = {
+    cookie: cookieStr,
+  };
+  setupHeaderCapture(page, authHeaders);
+
+  // 4. 쿠키가 유효한지 확인
+  await page.goto(config.flexBaseUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+
+  const currentUrl = page.url();
+  if (currentUrl.includes("/login") || currentUrl.includes("/auth/")) {
+    await cleanup({ browser, context, page, authHeaders });
+    throw new Error("Playwriter에서 가져온 쿠키가 만료되었습니다. Chrome에서 flex.team에 다시 로그인하세요.");
+  }
+
+  console.log("[FLEX-AX:AUTH] Playwriter 세션으로 로그인 성공");
   return { browser, context, page, authHeaders };
 }
 
