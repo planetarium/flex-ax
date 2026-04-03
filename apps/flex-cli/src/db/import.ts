@@ -163,7 +163,7 @@ export async function importToSqlite(
       for (const file of batch) {
         if (!file.endsWith(".json")) continue;
         const data = readJsonSync(path.join(instancesDir, file));
-        importInstance(data, stmts, result, users, upsertUser);
+        importInstance(data, stmts, result, upsertUser);
       }
     });
     importBatch();
@@ -185,8 +185,8 @@ export async function importToSqlite(
       stmts.attendance.run(
         data.id, data.applicant?.id ?? null, data.type,
         data.details?.policyId ?? data._raw?.timeOffPolicyId ?? null,
-        data.details?.dateFrom ?? data.appliedAt ?? null,
-        data.details?.dateTo ?? null,
+        data.details?.dateFrom ?? data.details?.startDate ?? data.details?.targetDate ?? data.appliedAt ?? null,
+        data.details?.dateTo ?? data.details?.endDate ?? null,
         data.details?.days ?? null,
         data.details?.minutes ?? null,
         data.status,
@@ -239,7 +239,6 @@ function importInstance(
   data: any,
   stmts: Record<string, Database.Statement>,
   result: ImportResult,
-  users: Map<string, { name: string; aliases: Set<string> }>,
   upsertUser: (id: string | undefined, name: string) => void,
 ): void {
   const raw = data._raw;

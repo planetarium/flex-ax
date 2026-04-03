@@ -67,16 +67,16 @@ export async function crawlTemplates(
           const template = mapTemplate(raw, null);
           await storage.saveTemplate(template);
           result.successCount++;
-        } catch {
+        } catch (saveError) {
           result.failureCount++;
           result.errors.push({
             target: `template:${raw.templateKey}:${raw.name}`,
-            phase: "detail",
-            message: error instanceof Error ? error.message : String(error),
+            phase: "save",
+            message: saveError instanceof Error ? saveError.message : String(saveError),
             timestamp: nowISO(),
           });
           logger.error(`양식 수집 실패: ${raw.name}`, {
-            error: error instanceof Error ? error.message : String(error),
+            error: saveError instanceof Error ? saveError.message : String(saveError),
           });
         }
       }

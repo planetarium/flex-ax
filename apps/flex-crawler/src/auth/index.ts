@@ -109,16 +109,20 @@ async function authenticateSSO(
 
   const page = context.pages()[0] ?? await context.newPage();
 
+  const ssoHostname = new URL(config.flexBaseUrl).hostname;
   page.on("request", (request) => {
     const url = request.url();
-    if (url.includes("flex.team") && url.includes("/api/")) {
-      const headers = request.headers();
-      for (const key of ["authorization", "cookie", "x-csrf-token"]) {
-        if (headers[key]) {
-          authHeaders[key] = headers[key];
+    try {
+      const reqHostname = new URL(url).hostname;
+      if (reqHostname === ssoHostname && url.includes("/api/")) {
+        const headers = request.headers();
+        for (const key of ["authorization", "cookie", "x-csrf-token"]) {
+          if (headers[key]) {
+            authHeaders[key] = headers[key];
+          }
         }
       }
-    }
+    } catch { /* skip */ }
   });
 
   // flex.team으로 이동 — 이미 로그인되어 있으면 바로 대시보드로 감

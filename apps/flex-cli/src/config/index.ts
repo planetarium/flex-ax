@@ -4,7 +4,6 @@ const configSchema = z
   .object({
     authMode: z.enum(["credentials", "sso", "playwriter"]).default("credentials"),
     playwriterSession: z.string().default(""),
-    chromeUserDataDir: z.string().default(""),
     flexEmail: z.string().default(""),
     flexPassword: z.string().default(""),
     flexBaseUrl: z.string().url().default("https://flex.team"),
@@ -12,7 +11,6 @@ const configSchema = z
     catalogPath: z.string().default("./output/api-catalog.json"),
     requestDelayMs: z.coerce.number().int().min(0).default(1000),
     maxRetries: z.coerce.number().int().min(0).default(3),
-    discoveryTimeoutMs: z.coerce.number().int().min(0).default(60000),
     downloadAttachments: z
       .enum(["true", "false"])
       .transform((v) => v === "true")
@@ -29,7 +27,6 @@ export function loadConfig(): Config {
   return configSchema.parse({
     authMode: process.env.AUTH_MODE || undefined,
     playwriterSession: process.env.PLAYWRITER_SESSION || undefined,
-    chromeUserDataDir: process.env.CHROME_USER_DATA_DIR || undefined,
     flexEmail: process.env.FLEX_EMAIL || undefined,
     flexPassword: process.env.FLEX_PASSWORD || undefined,
     flexBaseUrl: process.env.FLEX_BASE_URL || undefined,
@@ -37,7 +34,6 @@ export function loadConfig(): Config {
     catalogPath: process.env.CATALOG_PATH || undefined,
     requestDelayMs: process.env.REQUEST_DELAY_MS || undefined,
     maxRetries: process.env.MAX_RETRIES || undefined,
-    discoveryTimeoutMs: process.env.DISCOVERY_TIMEOUT_MS || undefined,
     downloadAttachments: process.env.DOWNLOAD_ATTACHMENTS || undefined,
     headless: process.env.HEADLESS || undefined,
   });

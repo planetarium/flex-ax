@@ -9,7 +9,7 @@ import type {
 /** 워크플로우 인스턴스(결재 문서) */
 export interface WorkflowInstance {
   id: string;
-  documentNumber?: string;
+  documentNumber: string;
   templateId: string;
   templateName: string;
   drafter: UserInfo;

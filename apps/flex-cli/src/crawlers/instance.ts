@@ -82,8 +82,11 @@ export async function crawlInstances(
         try {
           logger.progress("인스턴스 수집", result.successCount + result.failureCount + 1, page.total);
 
-          const detailPath = `/api/v3/approval-document/approval-documents/${docKey}`;
-          const detailUrl = `${config.flexBaseUrl}${detailPath}`;
+          const detailBase = resolveUrl(
+            config.flexBaseUrl, catalog, "instance-detail",
+            "/api/v3/approval-document/approval-documents",
+          );
+          const detailUrl = `${detailBase.replace(/\{[^}]+\}/, docKey)}${detailBase.includes(docKey) ? "" : `/${docKey}`}`;
 
           const detail = await withRetry(
             () => flexFetch<DocumentDetailResponse>(authCtx, detailUrl),
