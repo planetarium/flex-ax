@@ -51,8 +51,10 @@ async function launchBrowser(
 async function collectCookies(
   context: BrowserContext,
   authHeaders: Record<string, string>,
+  baseUrl: string,
 ): Promise<void> {
-  const cookies = await context.cookies();
+  const targetUrl = new URL(baseUrl).origin;
+  const cookies = await context.cookies(targetUrl);
   if (cookies.length > 0) {
     authHeaders["cookie"] = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
   }
@@ -88,7 +90,7 @@ async function authenticateCredentials(
   });
 
   await page.waitForLoadState("networkidle");
-  await collectCookies(context, authHeaders);
+  await collectCookies(context, authHeaders, config.flexBaseUrl);
 
   logger.info("로그인 성공", { url: page.url() });
   return { browser, context, page, authHeaders };
@@ -146,7 +148,7 @@ async function authenticateSSO(
   }
 
   await page.waitForLoadState("networkidle");
-  await collectCookies(context, authHeaders);
+  await collectCookies(context, authHeaders, config.flexBaseUrl);
 
   logger.info("SSO 로그인 성공", { url: page.url() });
 

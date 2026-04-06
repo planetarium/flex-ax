@@ -315,7 +315,7 @@ async function processAttachments(
         const buffer = await response.body();
 
         const savedPath = await storage.saveAttachment(
-          instanceId, att.file.fileName, buffer,
+          instanceId, att.file.fileName, buffer, att.file.fileKey,
         );
         info.localPath = savedPath;
       } catch (error) {

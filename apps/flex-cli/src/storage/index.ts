@@ -21,7 +21,7 @@ export interface StorageWriter {
   saveTemplate(template: WorkflowTemplate): Promise<void>;
   saveInstance(instance: WorkflowInstance): Promise<void>;
   saveAttendanceApproval(approval: AttendanceApproval): Promise<void>;
-  saveAttachment(instanceId: string, fileName: string, data: Buffer): Promise<string>;
+  saveAttachment(instanceId: string, fileName: string, data: Buffer, fileKey?: string): Promise<string>;
   saveReport(report: CrawlReport): Promise<void>;
   saveCatalog(catalog: ApiCatalog): Promise<void>;
 }
@@ -52,11 +52,13 @@ export function createStorageWriter(outputDir: string, catalogPath: string): Sto
       await writeJson(path.join(outputDir, "attendance", `${safeId}.json`), approval);
     },
 
-    async saveAttachment(instanceId, fileName, data) {
+    async saveAttachment(instanceId, fileName, data, fileKey) {
       const safeInstanceId = path.basename(instanceId);
       const dir = path.join(outputDir, "attachments", safeInstanceId);
       await ensureDir(dir);
-      const safeName = path.basename(fileName).replace(/[<>:"|?*]/g, "_") || "attachment";
+      const baseName = path.basename(fileName).replace(/[<>:"|?*]/g, "_") || "attachment";
+      // fileKey가 있으면 prefix로 추가하여 동일 파일명 충돌 방지
+      const safeName = fileKey ? `${path.basename(fileKey)}_${baseName}` : baseName;
       const filePath = path.join(dir, safeName);
       await writeFile(filePath, data);
       return filePath;
