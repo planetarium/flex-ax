@@ -275,7 +275,7 @@ function mapInstance(detail: DocumentDetailResponse, attachments: AttachmentInfo
     id: doc.documentKey,
     documentNumber: doc.code,
     templateId: doc.templateKey,
-    templateName: doc.title,
+    templateName: doc.templateKey,
     drafter: { id: doc.writer.idHash, name: doc.writer.name },
     draftedAt: doc.writtenAt,
     status: doc.status,

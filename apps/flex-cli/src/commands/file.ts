@@ -15,7 +15,13 @@ export async function runFile(): Promise<void> {
     process.exit(1);
   }
 
-  const config = loadConfig();
+  let config: ReturnType<typeof loadConfig>;
+  try {
+    config = loadConfig();
+  } catch (error) {
+    console.error(`[FLEX-AX:ERROR] 설정 로딩 실패: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
   const dbPath = path.resolve(config.outputDir, "flex-ax.db");
 
   let db: InstanceType<typeof Database>;
