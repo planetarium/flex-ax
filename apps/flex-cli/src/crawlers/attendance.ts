@@ -39,7 +39,7 @@ export async function crawlAttendanceApprovals(
     try {
       const data = await withRetry(
         () => flexFetch<Record<string, unknown>>(authCtx, url),
-        { maxRetries: 1, delayMs: config.requestDelayMs },
+        { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
       );
 
       const items = extractItems(data);

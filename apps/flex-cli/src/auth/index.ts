@@ -33,7 +33,7 @@ function setupHeaderCapture(
     const url = request.url();
     try {
       const reqHostname = new URL(url).hostname;
-      if (reqHostname === baseHostname && url.includes("/api/")) {
+      if (reqHostname === baseHostname && (url.includes("/api/") || url.includes("/action/"))) {
         const headers = request.headers();
         for (const key of ["authorization", "cookie", "x-csrf-token"]) {
           if (headers[key]) {
