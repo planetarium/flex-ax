@@ -7,11 +7,15 @@
   "bin": {
     "flex-ax": "./dist/cli.js"
   },
+  "files": [
+    "dist",
+    "!dist/**/*.map"
+  ],
   "scripts": {
     "start": "tsx src/cli.ts",
     "crawl": "tsx src/cli.ts crawl",
     "install-skills": "tsx src/cli.ts install-skills",
-    "build": "tsc && node -e \"const fs=require('fs'); fs.mkdirSync('dist/db',{recursive:true}); fs.copyFileSync('src/db/schema.sql','dist/db/schema.sql');\"",
+    "build": "tsc && node -e \"const fs=require('fs'); fs.mkdirSync('dist/db',{recursive:true}); fs.copyFileSync('src/db/schema.sql','dist/db/schema.sql'); const cli='dist/cli.js'; const src=fs.readFileSync(cli,'utf8'); if(!src.startsWith('#!')) fs.writeFileSync(cli,'#!/usr/bin/env node\\n'+src);\"",
     "lint": "tsc --noEmit",
     "clean": "rimraf output dist"
   },
