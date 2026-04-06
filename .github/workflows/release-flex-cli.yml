@@ -24,15 +24,25 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Build flex-cli
-        run: pnpm --filter flex-ax build
-
-      - name: Pack tarball
-        working-directory: apps/flex-cli
-        run: pnpm pack --pack-destination ../../
+        run: pnpm --filter ./apps/flex-cli build
 
       - name: Extract version from tag
         id: version
         run: echo "version=${GITHUB_REF_NAME#flex-cli@}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify version matches package.json
+        working-directory: apps/flex-cli
+        run: |
+          pkg_version=$(node -p "require('./package.json').version")
+          tag_version="${{ steps.version.outputs.version }}"
+          if [ "$pkg_version" != "$tag_version" ]; then
+            echo "::error::Tag version ($tag_version) does not match package.json version ($pkg_version)"
+            exit 1
+          fi
+
+      - name: Pack tarball
+        working-directory: apps/flex-cli
+        run: pnpm pack --pack-destination ../../
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
