@@ -211,31 +211,6 @@ async function authenticatePlaywriter(
   return { browser, context, page, authHeaders };
 }
 
-export async function ensureAuthenticated(
-  authCtx: AuthContext,
-  config: Config,
-  logger: Logger,
-): Promise<void> {
-  try {
-    const response = await authCtx.page.goto(`${config.flexBaseUrl}/api/v2/core/me`, {
-      waitUntil: "domcontentloaded",
-      timeout: 10000,
-    });
-
-    if (response && response.status() === 401) {
-      logger.warn("세션 만료 감지, 재인증 시도...");
-      await cleanup(authCtx);
-      const newCtx = await authenticate(config, logger);
-      Object.assign(authCtx, newCtx);
-    }
-  } catch {
-    logger.warn("세션 확인 실패, 재인증 시도...");
-    await cleanup(authCtx);
-    const newCtx = await authenticate(config, logger);
-    Object.assign(authCtx, newCtx);
-  }
-}
-
 export async function cleanup(authCtx: AuthContext): Promise<void> {
   try {
     await authCtx.page.close().catch(() => {});

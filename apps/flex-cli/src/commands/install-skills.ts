@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 
 export async function runInstallSkills(): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const skillsSource = path.resolve(__dirname, "../../skills");
+  // src/commands/ → src/ → パッケージルート(apps/flex-cli)
+  const packageRoot = path.resolve(__dirname, "../..");
+  const skillsSource = path.join(packageRoot, "skills");
   const projectRoot = findProjectRoot(process.cwd());
   const skillsTarget = path.join(projectRoot, ".claude", "skills");
 
@@ -13,6 +15,7 @@ export async function runInstallSkills(): Promise<void> {
     accessSync(skillsSource);
   } catch {
     console.error(`[FLEX-AX:ERROR] 스킬 소스 디렉토리를 찾을 수 없습니다: ${skillsSource}`);
+    console.error("[FLEX-AX:ERROR] 먼저 flex-ax 패키지의 skills/ 디렉토리에 스킬 파일을 추가해 주세요.");
     process.exit(1);
   }
 
