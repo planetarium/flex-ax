@@ -23,7 +23,7 @@ jobs:
           node-version: "22"
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --filter ./apps/flex-cli...
 
       - name: Build flex-cli
         run: pnpm --filter ./apps/flex-cli build
@@ -47,7 +47,7 @@ jobs:
         run: pnpm pack --pack-destination ../../
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
         with:
           name: "flex-cli ${{ steps.version.outputs.version }}"
           files: flex-ax-*.tgz
