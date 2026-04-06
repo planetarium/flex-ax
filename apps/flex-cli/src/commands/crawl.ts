@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { loadConfig, type Config } from "../config/index.js";
 import { createLogger } from "../logger/index.js";
-import { authenticate, cleanup } from "../auth/index.js";
+import { authenticate, cleanup, type AuthContext } from "../auth/index.js";
 import { createStorageWriter, type CrawlReport } from "../storage/index.js";
 import type { ApiCatalog } from "../types/catalog.js";
 import { crawlTemplates } from "../crawlers/template.js";
@@ -41,7 +41,7 @@ export async function runCrawl(): Promise<void> {
   }
 
   // 인증
-  let authCtx;
+  let authCtx: AuthContext;
   try {
     authCtx = await authenticate(config, logger);
   } catch (error) {
