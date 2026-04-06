@@ -1,0 +1,54 @@
+name: Release flex-cli
+
+on:
+  push:
+    tags:
+      - "flex-cli@*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile --filter ./apps/flex-cli...
+
+      - name: Build flex-cli
+        run: pnpm --filter ./apps/flex-cli build
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#flex-cli@}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify version matches package.json
+        working-directory: apps/flex-cli
+        run: |
+          pkg_version=$(node -p "require('./package.json').version")
+          tag_version="${{ steps.version.outputs.version }}"
+          if [ "$pkg_version" != "$tag_version" ]; then
+            echo "::error::Tag version ($tag_version) does not match package.json version ($pkg_version)"
+            exit 1
+          fi
+
+      - name: Pack tarball
+        working-directory: apps/flex-cli
+        run: pnpm pack --pack-destination ../../
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
+        with:
+          name: "flex-cli ${{ steps.version.outputs.version }}"
+          files: flex-ax-*.tgz
+          generate_release_notes: true
