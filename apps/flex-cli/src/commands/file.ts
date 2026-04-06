@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { readFileSync, createReadStream } from "node:fs";
+import { createReadStream } from "node:fs";
 import { loadConfig } from "../config/index.js";
 import path from "node:path";
 

@@ -160,7 +160,8 @@ async function authenticatePlaywriter(
   if (!/^[\w-]+$/.test(sessionId)) {
     throw new Error(`Invalid session ID: ${sessionId}`);
   }
-  const cookieScript = `await page.goto('${config.flexBaseUrl}'); const cookies = await page.evaluate(() => document.cookie); return cookies;`;
+  const safeFlexBaseUrl = JSON.stringify(config.flexBaseUrl);
+  const cookieScript = `await page.goto(${safeFlexBaseUrl}); const cookies = await page.evaluate(() => document.cookie); return cookies;`;
   const rawOutput = execFileSync("playwriter", [
     "-s", sessionId,
     "--timeout", "30000",

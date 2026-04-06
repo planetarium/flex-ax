@@ -11,7 +11,7 @@
     "start": "tsx src/cli.ts",
     "crawl": "tsx src/cli.ts crawl",
     "install-skills": "tsx src/cli.ts install-skills",
-    "build": "tsc && cp src/db/schema.sql dist/db/schema.sql",
+    "build": "tsc && node -e \"const fs=require('fs'); fs.mkdirSync('dist/db',{recursive:true}); fs.copyFileSync('src/db/schema.sql','dist/db/schema.sql');\"",
     "lint": "tsc --noEmit",
     "clean": "rimraf output dist"
   },

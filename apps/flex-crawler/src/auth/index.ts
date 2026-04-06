@@ -160,7 +160,14 @@ function getDefaultChromeUserDataDir(): string {
     return `${home}/Library/Application Support/Google/Chrome`;
   }
   if (platform === "win32") {
-    return `${process.env.LOCALAPPDATA}\\Google\\Chrome\\User Data`;
+    const localAppData = process.env.LOCALAPPDATA
+      ?? (process.env.USERPROFILE ? `${process.env.USERPROFILE}\\AppData\\Local` : undefined);
+    if (!localAppData) {
+      throw new Error(
+        "Chrome 사용자 데이터 디렉터리를 확인할 수 없습니다. CHROME_USER_DATA_DIR 환경 변수를 설정해 주세요.",
+      );
+    }
+    return `${localAppData}\\Google\\Chrome\\User Data`;
   }
   // linux
   return `${home}/.config/google-chrome`;
