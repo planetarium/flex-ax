@@ -18,7 +18,7 @@ export async function runFile(): Promise<void> {
   const config = loadConfig();
   const dbPath = path.resolve(config.outputDir, "flex-ax.db");
 
-  let db;
+  let db: InstanceType<typeof Database>;
   try {
     db = new Database(dbPath, { readonly: true });
   } catch {

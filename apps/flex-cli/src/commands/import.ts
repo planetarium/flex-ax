@@ -1,4 +1,4 @@
-import { loadConfig } from "../config/index.js";
+import { loadConfig, type Config } from "../config/index.js";
 import { createLogger } from "../logger/index.js";
 import { importToSqlite } from "../db/import.js";
 import path from "node:path";
@@ -6,7 +6,7 @@ import path from "node:path";
 export async function runImport(): Promise<void> {
   const logger = createLogger("IMPORT");
 
-  let config;
+  let config: Config;
   try {
     config = loadConfig();
   } catch (error) {

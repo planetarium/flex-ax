@@ -16,7 +16,7 @@ SQL을 실행하고 결과를 JSON으로 출력합니다 (read-only).
   const config = loadConfig();
   const dbPath = path.resolve(config.outputDir, "flex-ax.db");
 
-  let db;
+  let db: InstanceType<typeof Database>;
   try {
     db = new Database(dbPath, { readonly: true });
   } catch {

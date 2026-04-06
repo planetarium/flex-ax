@@ -86,7 +86,10 @@ export async function crawlInstances(
             config.flexBaseUrl, catalog, "instance-detail",
             "/api/v3/approval-document/approval-documents",
           );
-          const detailUrl = `${detailBase.replace(/\{[^}]+\}/, docKey)}${detailBase.includes(docKey) ? "" : `/${docKey}`}`;
+          const hasPathParam = /\{[^}]+\}/.test(detailBase);
+          const detailUrl = hasPathParam
+            ? detailBase.replace(/\{[^}]+\}/, docKey)
+            : `${detailBase}/${docKey}`;
 
           const detail = await withRetry(
             () => flexFetch<DocumentDetailResponse>(authCtx, detailUrl),

@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { loadConfig } from "../config/index.js";
+import { loadConfig, type Config } from "../config/index.js";
 import { createLogger } from "../logger/index.js";
 import { authenticate, cleanup } from "../auth/index.js";
 import { createStorageWriter, type CrawlReport } from "../storage/index.js";
@@ -13,7 +13,7 @@ import type { CrawlResult } from "../crawlers/shared.js";
 export async function runCrawl(): Promise<void> {
   const logger = createLogger("CRAWL");
 
-  let config;
+  let config: Config;
   try {
     config = loadConfig();
   } catch (error) {
