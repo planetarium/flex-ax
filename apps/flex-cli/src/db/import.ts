@@ -298,9 +298,10 @@ function importInstance(
     const rawLines = raw?.approvalProcess?.lines ?? [];
     let approverId: string | null = null;
     const rawLine = rawLines.find((l: any) => l.step === al.order);
-    if (rawLine?.actors[seq]) {
-      approverId = rawLine.actors[seq].actedUserIdHash
-        ?? rawLine.actors[seq].resolvedTarget.userIdHashes?.[0]
+    const actor = rawLine?.actors?.[seq];
+    if (actor) {
+      approverId = actor.actedUserIdHash
+        ?? actor.resolvedTarget?.userIdHashes?.[0]
         ?? null;
     }
 

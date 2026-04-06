@@ -41,7 +41,15 @@ export async function runCrawl(): Promise<void> {
   }
 
   // 인증
-  const authCtx = await authenticate(config, logger);
+  let authCtx;
+  try {
+    authCtx = await authenticate(config, logger);
+  } catch (error) {
+    logger.error("인증 실패", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    process.exit(1);
+  }
 
   const storage = createStorageWriter(config.outputDir, config.catalogPath);
   const startedAt = new Date().toISOString();

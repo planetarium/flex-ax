@@ -303,18 +303,16 @@ async function processAttachments(
 
     if (config.downloadAttachments) {
       try {
-        const buffer = await authCtx.page.evaluate(
-          async ([url, headers]) => {
-            const res = await fetch(url, { headers: headers as Record<string, string> });
-            if (!res.ok) throw new Error(`HTTP ${res.status}: ${url}`);
-            const ab = await res.arrayBuffer();
-            return Array.from(new Uint8Array(ab));
-          },
-          [att.file.downloadUrl, authCtx.authHeaders] as const,
-        );
+        const response = await authCtx.page.request.get(att.file.downloadUrl, {
+          headers: authCtx.authHeaders as Record<string, string>,
+        });
+        if (!response.ok()) {
+          throw new Error(`HTTP ${response.status()}: ${att.file.downloadUrl}`);
+        }
+        const buffer = await response.body();
 
         const savedPath = await storage.saveAttachment(
-          instanceId, att.file.fileName, Buffer.from(buffer),
+          instanceId, att.file.fileName, buffer,
         );
         info.localPath = savedPath;
       } catch (error) {
