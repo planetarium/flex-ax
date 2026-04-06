@@ -33,21 +33,9 @@ export async function importToSqlite(
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = OFF"); // 임포트 순서 무관하게 처리, 완료 후 체크
 
-  // schema.sql 경로: 같은 디렉토리 → src 폴백 → 에러
-  const schemaCandidates = [
-    path.join(__dirname, "schema.sql"),
-    path.resolve(__dirname, "../../src/db/schema.sql"),
-  ];
-  let schema = "";
-  for (const candidate of schemaCandidates) {
-    try {
-      schema = await readFile(candidate, "utf-8");
-      break;
-    } catch { /* try next */ }
-  }
-  if (!schema) {
-    throw new Error(`schema.sql을 찾을 수 없습니다: ${schemaCandidates.join(", ")}`);
-  }
+  // schema.sql은 빌드 시 dist/db/로 복사됨 (package.json build 스크립트 참고)
+  const schemaPath = path.join(__dirname, "schema.sql");
+  const schema = await readFile(schemaPath, "utf-8");
   db.exec(schema);
 
   // 사용자 수집용
