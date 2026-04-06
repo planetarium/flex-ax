@@ -15,7 +15,7 @@ export async function runInstallSkills(): Promise<void> {
     accessSync(skillsSource);
   } catch {
     console.error(`[FLEX-AX:ERROR] 스킬 소스 디렉토리를 찾을 수 없습니다: ${skillsSource}`);
-    console.error("[FLEX-AX:ERROR] 먼저 flex-ax 패키지의 skills/ 디렉토리에 스킬 파일을 추가해 주세요.");
+    console.error("[FLEX-AX:ERROR] 스킬 파일은 별도 PR(discover 커맨드)에서 추가됩니다.");
     process.exit(1);
   }
 

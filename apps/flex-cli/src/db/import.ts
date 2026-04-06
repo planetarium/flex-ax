@@ -173,7 +173,7 @@ export async function importToSqlite(
       stmts.attendance.run(
         data.id, data.applicant?.id ?? null, data.type,
         data.details?.policyId ?? data._raw?.timeOffPolicyId ?? null,
-        data.details?.dateFrom ?? data.details?.startDate ?? data.details?.targetDate ?? data.appliedAt ?? null,
+        data.details?.dateFrom ?? data.details?.startDate ?? data.details?.targetDate ?? (data.appliedAt?.slice(0, 10) ?? null),
         data.details?.dateTo ?? data.details?.endDate ?? null,
         data.details?.days ?? null,
         data.details?.minutes ?? null,
