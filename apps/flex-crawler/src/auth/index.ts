@@ -32,7 +32,7 @@ async function launchBrowser(
     const url = request.url();
     try {
       const reqHostname = new URL(url).hostname;
-      if (reqHostname === baseHostname && url.includes("/api/")) {
+      if (reqHostname === baseHostname && (url.includes("/api/") || url.includes("/action/"))) {
         const headers = request.headers();
         for (const key of ["authorization", "cookie", "x-csrf-token"]) {
           if (headers[key]) {
@@ -114,7 +114,7 @@ async function authenticateSSO(
     const url = request.url();
     try {
       const reqHostname = new URL(url).hostname;
-      if (reqHostname === ssoHostname && url.includes("/api/")) {
+      if (reqHostname === ssoHostname && (url.includes("/api/") || url.includes("/action/"))) {
         const headers = request.headers();
         for (const key of ["authorization", "cookie", "x-csrf-token"]) {
           if (headers[key]) {

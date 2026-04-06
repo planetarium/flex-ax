@@ -53,12 +53,17 @@ export async function runFile(): Promise<void> {
     }
 
     // 바이너리 파일을 stdout으로 출력
-    const stream = createReadStream(row.local_path);
-    stream.pipe(process.stdout);
-    await new Promise((resolve, reject) => {
-      stream.on("end", () => resolve(undefined));
-      stream.on("error", reject);
-    });
+    try {
+      const stream = createReadStream(row.local_path);
+      stream.pipe(process.stdout);
+      await new Promise((resolve, reject) => {
+        stream.on("end", () => resolve(undefined));
+        stream.on("error", reject);
+      });
+    } catch (error) {
+      console.error(`[FLEX-AX:ERROR] 파일 읽기 실패: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
   } finally {
     db.close();
   }
