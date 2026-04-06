@@ -56,7 +56,7 @@ export function createStorageWriter(outputDir: string, catalogPath: string): Sto
       const safeInstanceId = path.basename(instanceId);
       const dir = path.join(outputDir, "attachments", safeInstanceId);
       await ensureDir(dir);
-      const safeName = path.basename(fileName);
+      const safeName = path.basename(fileName).replace(/[<>:"|?*]/g, "_") || "attachment";
       const filePath = path.join(dir, safeName);
       await writeFile(filePath, data);
       return filePath;

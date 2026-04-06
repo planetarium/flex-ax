@@ -143,10 +143,19 @@ async function authenticatePlaywriter(
   let sessionId = config.playwriterSession;
   if (!sessionId) {
     logger.info("Playwriter 세션 생성 중...");
-    const output = execFileSync("playwriter", ["session", "new"], {
-      encoding: "utf-8",
-      timeout: 30000,
-    });
+    let output: string;
+    try {
+      output = execFileSync("playwriter", ["session", "new"], {
+        encoding: "utf-8",
+        timeout: 30000,
+      });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        throw new Error("playwriter 명령을 찾을 수 없습니다. playwriter CLI가 설치되어 있고 PATH에 포함되어 있는지 확인하세요.");
+      }
+      throw error;
+    }
     const match = output.match(/Session\s+(\S+)\s+created/);
     if (!match) {
       throw new Error(`Playwriter 세션 생성 실패: ${output}`);
@@ -162,11 +171,20 @@ async function authenticatePlaywriter(
   }
   const safeFlexBaseUrl = JSON.stringify(config.flexBaseUrl);
   const cookieScript = `await page.goto(${safeFlexBaseUrl}); const cookies = await page.evaluate(() => document.cookie); return cookies;`;
-  const rawOutput = execFileSync("playwriter", [
-    "-s", sessionId,
-    "--timeout", "30000",
-    "-e", cookieScript,
-  ], { encoding: "utf-8", timeout: 40000 });
+  let rawOutput: string;
+  try {
+    rawOutput = execFileSync("playwriter", [
+      "-s", sessionId,
+      "--timeout", "30000",
+      "-e", cookieScript,
+    ], { encoding: "utf-8", timeout: 40000 });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      throw new Error("playwriter 명령을 찾을 수 없습니다. playwriter CLI가 설치되어 있고 PATH에 포함되어 있는지 확인하세요.");
+    }
+    throw error;
+  }
   const cookieStr = rawOutput.replace("[return value] ", "").trim();
 
   if (!cookieStr) {
