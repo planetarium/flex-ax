@@ -3,7 +3,7 @@ import { loadConfig } from "../config/index.js";
 import path from "node:path";
 import { readFileSync } from "node:fs";
 
-function parseQueryArgs(argv: string[]): {
+export function parseQueryArgs(argv: string[]): {
   sql: string | null;
   filePath: string | null;
   vars: Map<string, string>;
@@ -33,7 +33,7 @@ function parseQueryArgs(argv: string[]): {
   return { sql: inlineSQL, filePath, vars };
 }
 
-function applyVars(sql: string, vars: Map<string, string>): string {
+export function applyVars(sql: string, vars: Map<string, string>): string {
   let result = sql;
   for (const [key, value] of vars) {
     result = result.replaceAll(`{{${key}}}`, value);

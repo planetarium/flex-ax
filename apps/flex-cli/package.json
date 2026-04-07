@@ -16,6 +16,7 @@
     "crawl": "tsx src/cli.ts crawl",
     "install-skills": "tsx src/cli.ts install-skills",
     "build": "tsc && node scripts/postbuild.cjs",
+    "test": "tsx --test src/**/*.test.ts",
     "lint": "tsc --noEmit",
     "clean": "rimraf output dist"
   },
