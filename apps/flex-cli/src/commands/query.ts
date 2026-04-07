@@ -35,8 +35,8 @@ export function parseQueryArgs(argv: string[]): {
       if (eqIdx === -1) {
         throw new QueryArgError(`--var 형식이 잘못되었습니다: ${varArg} (expected key=value)`);
       }
-      const key = varArg.slice(0, eqIdx);
-      if (key.trim().length === 0) {
+      const key = varArg.slice(0, eqIdx).trim();
+      if (key.length === 0) {
         throw new QueryArgError(`--var 형식이 잘못되었습니다: ${varArg} (expected non-empty key=value)`);
       }
       vars.set(key, varArg.slice(eqIdx + 1));
