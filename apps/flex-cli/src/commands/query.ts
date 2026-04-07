@@ -52,7 +52,7 @@ export function parseQueryArgs(argv: string[]): {
 export function applyVars(sql: string, vars: Map<string, string>): string {
   let result = sql;
   for (const [key, value] of vars) {
-    result = result.replaceAll(`{{${key}}}`, value);
+    result = result.replaceAll(`{{${key}}}`, () => value);
   }
   return result;
 }

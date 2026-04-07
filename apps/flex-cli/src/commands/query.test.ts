@@ -111,4 +111,9 @@ describe("applyVars", () => {
     const result = applyVars("SELECT 1", new Map());
     assert.equal(result, "SELECT 1");
   });
+
+  it("preserves dollar signs in values literally", () => {
+    const result = applyVars("{{v}}", new Map([["v", "$& $$ $1"]]));
+    assert.equal(result, "$& $$ $1");
+  });
 });
