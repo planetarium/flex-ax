@@ -53,6 +53,8 @@ Commands:
   crawl           카탈로그 기반 크롤링 → output/ 저장
   import          크롤링 결과(JSON) → SQLite DB 변환
   query "SQL"     DB 쿼리 실행 → JSON 출력 (read-only)
+                  --file <path>  SQL 파일 경로
+                  --var key=value  {{key}} 플레이스홀더 치환 (반복 가능)
   file <fileKey>  파일 내용 출력 (--info로 메타데이터만)
   install-skills  에이전트 스킬을 .claude/skills/에 설치
 
