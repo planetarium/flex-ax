@@ -76,6 +76,13 @@ describe("parseQueryArgs", () => {
       (err: unknown) => err instanceof QueryArgError && /key=value/.test(err.message),
     );
   });
+
+  it("throws on --var with empty key", () => {
+    assert.throws(
+      () => parseQueryArgs([...base, "--var", "=value"]),
+      (err: unknown) => err instanceof QueryArgError && /non-empty/.test(err.message),
+    );
+  });
 });
 
 describe("applyVars", () => {

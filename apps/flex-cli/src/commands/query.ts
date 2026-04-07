@@ -35,7 +35,11 @@ export function parseQueryArgs(argv: string[]): {
       if (eqIdx === -1) {
         throw new QueryArgError(`--var 형식이 잘못되었습니다: ${varArg} (expected key=value)`);
       }
-      vars.set(varArg.slice(0, eqIdx), varArg.slice(eqIdx + 1));
+      const key = varArg.slice(0, eqIdx);
+      if (key.trim().length === 0) {
+        throw new QueryArgError(`--var 형식이 잘못되었습니다: ${varArg} (expected non-empty key=value)`);
+      }
+      vars.set(key, varArg.slice(eqIdx + 1));
     } else {
       positional.push(args[i]);
     }
@@ -68,6 +72,10 @@ export async function runQuery(): Promise<void> {
 
   let sql: string;
   if (filePath) {
+    if (inlineSQL) {
+      console.error(`[FLEX-AX:ERROR] --file과 인라인 SQL을 동시에 사용할 수 없습니다.`);
+      process.exit(1);
+    }
     try {
       sql = readFileSync(filePath, "utf-8").trim();
     } catch (error) {
@@ -86,10 +94,6 @@ export async function runQuery(): Promise<void> {
     }
     if (!sql) {
       console.error(`[FLEX-AX:ERROR] SQL 파일이 비어 있습니다: ${filePath}`);
-      process.exit(1);
-    }
-    if (inlineSQL) {
-      console.error(`[FLEX-AX:ERROR] --file과 인라인 SQL을 동시에 사용할 수 없습니다.`);
       process.exit(1);
     }
   } else if (inlineSQL) {
