@@ -1,16 +1,74 @@
 import Database from "better-sqlite3";
 import { loadConfig } from "../config/index.js";
 import path from "node:path";
+import { readFileSync } from "node:fs";
+
+function parseQueryArgs(argv: string[]): {
+  sql: string | null;
+  filePath: string | null;
+  vars: Map<string, string>;
+} {
+  const args = argv.slice(3);
+  let filePath: string | null = null;
+  let vars = new Map<string, string>();
+  const positional: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--file" && i + 1 < args.length) {
+      filePath = args[++i];
+    } else if (args[i] === "--var" && i + 1 < args.length) {
+      const varArg = args[++i];
+      const eqIdx = varArg.indexOf("=");
+      if (eqIdx === -1) {
+        console.error(`[FLEX-AX:ERROR] --var 형식이 잘못되었습니다: ${varArg} (expected key=value)`);
+        process.exit(1);
+      }
+      vars.set(varArg.slice(0, eqIdx), varArg.slice(eqIdx + 1));
+    } else {
+      positional.push(args[i]);
+    }
+  }
+
+  const inlineSQL = positional.join(" ").trim() || null;
+  return { sql: inlineSQL, filePath, vars };
+}
+
+function applyVars(sql: string, vars: Map<string, string>): string {
+  let result = sql;
+  for (const [key, value] of vars) {
+    result = result.replaceAll(`{{${key}}}`, value);
+  }
+  return result;
+}
 
 export async function runQuery(): Promise<void> {
-  const sql = process.argv.slice(3).join(" ").trim();
+  const { sql: inlineSQL, filePath, vars } = parseQueryArgs(process.argv);
 
-  if (!sql) {
+  let sql: string;
+  if (filePath) {
+    try {
+      sql = readFileSync(filePath, "utf-8").trim();
+    } catch (error) {
+      console.error(`[FLEX-AX:ERROR] SQL 파일을 읽을 수 없습니다: ${filePath}`);
+      process.exit(1);
+    }
+    if (inlineSQL) {
+      console.error(`[FLEX-AX:ERROR] --file과 인라인 SQL을 동시에 사용할 수 없습니다.`);
+      process.exit(1);
+    }
+  } else if (inlineSQL) {
+    sql = inlineSQL;
+  } else {
     console.error(`Usage: flex-ax query "SELECT ..."
+       flex-ax query --file queries/search.sql [--var key=value ...]
 
 SQL을 실행하고 결과를 JSON으로 출력합니다 (read-only).
 스키마는 apps/flex-cli/src/db/schema.sql 을 참조하세요.`);
     process.exit(1);
+  }
+
+  if (vars.size > 0) {
+    sql = applyVars(sql, vars);
   }
 
   let config: ReturnType<typeof loadConfig>;
