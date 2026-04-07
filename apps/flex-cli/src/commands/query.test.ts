@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseQueryArgs, applyVars } from "./query.js";
+import { parseQueryArgs, applyVars, QueryArgError } from "./query.js";
 
 describe("parseQueryArgs", () => {
   // argv[0] = node, argv[1] = script, argv[2] = "query", argv[3..] = args
@@ -47,6 +47,34 @@ describe("parseQueryArgs", () => {
     const result = parseQueryArgs([...base, "--var", "x=1", "SELECT", "1"]);
     assert.equal(result.sql, "SELECT 1");
     assert.equal(result.vars.get("x"), "1");
+  });
+
+  it("throws on --file without value", () => {
+    assert.throws(
+      () => parseQueryArgs([...base, "--file"]),
+      (err: unknown) => err instanceof QueryArgError && /--file/.test(err.message),
+    );
+  });
+
+  it("throws on --file followed by another flag", () => {
+    assert.throws(
+      () => parseQueryArgs([...base, "--file", "--var", "x=1"]),
+      (err: unknown) => err instanceof QueryArgError && /--file/.test(err.message),
+    );
+  });
+
+  it("throws on --var without value", () => {
+    assert.throws(
+      () => parseQueryArgs([...base, "--var"]),
+      (err: unknown) => err instanceof QueryArgError && /--var/.test(err.message),
+    );
+  });
+
+  it("throws on --var with invalid format", () => {
+    assert.throws(
+      () => parseQueryArgs([...base, "--var", "badformat"]),
+      (err: unknown) => err instanceof QueryArgError && /key=value/.test(err.message),
+    );
   });
 });
 
