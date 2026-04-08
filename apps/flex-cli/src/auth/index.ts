@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import type { Config } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
@@ -9,13 +10,32 @@ export interface AuthContext {
   authHeaders: Record<string, string>;
 }
 
+/**
+ * Check that Playwright's bundled Chromium browser is available.
+ * Fails early with a helpful message instead of crashing mid-auth.
+ */
+function ensurePlaywrightBrowser(): void {
+  const execPath = chromium.executablePath();
+  if (!fs.existsSync(execPath)) {
+    console.error(
+      "[FLEX-AX:ERROR] Playwright Chromium browser is not installed.\n" +
+      "Please run: npx playwright install chromium",
+    );
+    process.exit(1);
+  }
+}
+
 export async function authenticate(
   config: Config,
   logger: Logger,
 ): Promise<AuthContext> {
+  // All auth modes eventually launch a local Chromium — verify it exists first
+  ensurePlaywrightBrowser();
+
   if (config.authMode === "playwriter") {
     return authenticatePlaywriter(config, logger);
   }
+
   if (config.authMode === "sso") {
     return authenticateSSO(config, logger);
   }

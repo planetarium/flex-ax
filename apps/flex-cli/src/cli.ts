@@ -1,4 +1,7 @@
 import "dotenv/config";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 // --auth <mode> 플래그 파싱 (커맨드 앞뒤 어디든 가능)
 const rawArgs = process.argv.slice(2);
@@ -18,8 +21,9 @@ process.argv = [process.argv[0], process.argv[1], ...rawArgs];
 const command = rawArgs[0];
 
 if (command === "--version" || command === "-v") {
-  const { version } = await import("../package.json", { with: { type: "json" } });
-  console.log(`flex-ax ${version}`);
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const pkg = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
+  console.log(`flex-ax ${pkg.version}`);
   process.exit(0);
 }
 
