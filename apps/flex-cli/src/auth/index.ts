@@ -9,6 +9,22 @@ export interface AuthContext {
   authHeaders: Record<string, string>;
 }
 
+/**
+ * Check that Playwright's bundled Chromium browser is available.
+ * Fails early with a helpful message instead of crashing mid-auth.
+ */
+function ensurePlaywrightBrowser(): void {
+  try {
+    chromium.executablePath();
+  } catch {
+    console.error(
+      "[FLEX-AX:ERROR] Playwright Chromium browser is not installed.\n" +
+      "Please run: npx playwright install chromium",
+    );
+    process.exit(1);
+  }
+}
+
 export async function authenticate(
   config: Config,
   logger: Logger,
@@ -16,6 +32,10 @@ export async function authenticate(
   if (config.authMode === "playwriter") {
     return authenticatePlaywriter(config, logger);
   }
+
+  // credentials and sso modes launch a local Chromium — verify it exists first
+  ensurePlaywrightBrowser();
+
   if (config.authMode === "sso") {
     return authenticateSSO(config, logger);
   }
