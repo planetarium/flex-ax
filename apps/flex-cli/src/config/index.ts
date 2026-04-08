@@ -3,6 +3,7 @@ import { z } from "zod";
 const configSchema = z
   .object({
     authMode: z.enum(["credentials", "sso", "playwriter"]).default("credentials"),
+    /** @deprecated playwriterSession is no longer used — CDP relay replaces CLI sessions */
     playwriterSession: z.string().default(""),
     flexEmail: z.string().default(""),
     flexPassword: z.string().default(""),

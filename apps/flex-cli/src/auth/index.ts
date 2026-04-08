@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import type { Config } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
@@ -135,71 +134,58 @@ async function authenticateSSO(
   return { browser, context, page, authHeaders };
 }
 
+const PLAYWRITER_CDP_URL = "http://127.0.0.1:19988";
+
 async function authenticatePlaywriter(
   config: Config,
   logger: Logger,
 ): Promise<AuthContext> {
-  logger.info("Playwriter 모드: 기존 Chrome 세션에서 쿠키를 가져옵니다.");
+  logger.info("Playwriter 모드: Extension CDP relay로 기존 Chrome 세션에 연결합니다.");
 
-  // 1. Playwriter 세션 확보 (기존 세션 ID 또는 새로 생성)
-  let sessionId = config.playwriterSession;
-  if (!sessionId) {
-    logger.info("Playwriter 세션 생성 중...");
-    let output: string;
-    try {
-      output = execFileSync("playwriter", ["session", "new"], {
-        encoding: "utf-8",
-        timeout: 30000,
-      });
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") {
-        throw new Error("playwriter 명령을 찾을 수 없습니다. playwriter CLI가 설치되어 있고 PATH에 포함되어 있는지 확인하세요.");
-      }
-      throw error;
-    }
-    const match = output.match(/Session\s+(\S+)\s+created/);
-    if (!match) {
-      throw new Error(`Playwriter 세션 생성 실패: ${output}`);
-    }
-    sessionId = match[1];
-    logger.info(`Playwriter 세션: ${sessionId}`);
-  }
-
-  // 2. Playwriter로 이동 + 쿠키 추출
-  // sessionId 검증 (영数字/ハイフンのみ)
-  if (!/^[\w-]+$/.test(sessionId)) {
-    throw new Error(`Invalid session ID: ${sessionId}`);
-  }
-  const safeFlexBaseUrl = JSON.stringify(config.flexBaseUrl);
-  const cookieScript = `await page.goto(${safeFlexBaseUrl}); const cookies = await page.evaluate(() => document.cookie); return cookies;`;
-  let rawOutput: string;
+  // 1. Playwriter Extension의 CDP relay에 연결
+  let remoteBrowser: Browser;
   try {
-    rawOutput = execFileSync("playwriter", [
-      "-s", sessionId,
-      "--timeout", "30000",
-      "-e", cookieScript,
-    ], { encoding: "utf-8", timeout: 40000 });
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
-      throw new Error("playwriter 명령을 찾을 수 없습니다. playwriter CLI가 설치되어 있고 PATH에 포함되어 있는지 확인하세요.");
-    }
-    throw error;
+    remoteBrowser = await chromium.connectOverCDP(PLAYWRITER_CDP_URL, { timeout: 10000 });
+  } catch {
+    throw new Error(
+      `Playwriter CDP relay(${PLAYWRITER_CDP_URL})에 연결할 수 없습니다. ` +
+      "Playwriter Extension이 활성화되어 있고, 대상 탭에서 Extension 아이콘을 클릭했는지 확인하세요.",
+    );
   }
-  const cookieStr = rawOutput.replace("[return value] ", "").trim();
+
+  // 2. 연결된 탭에서 쿠키 추출
+  const contexts = remoteBrowser.contexts();
+  if (contexts.length === 0) {
+    remoteBrowser.close().catch(() => {});
+    throw new Error("Playwriter에 연결된 브라우저 컨텍스트가 없습니다.");
+  }
+
+  const remoteContext = contexts[0];
+  const pages = remoteContext.pages();
+  if (pages.length === 0) {
+    remoteBrowser.close().catch(() => {});
+    throw new Error("Playwriter에 연결된 탭이 없습니다. Chrome에서 flex.team 탭을 열고 Extension 아이콘을 클릭하세요.");
+  }
+
+  // flex.team 탭 찾기, 없으면 첫 번째 탭에서 이동
+  let remotePage = pages.find((p) => p.url().includes(new URL(config.flexBaseUrl).hostname));
+  if (!remotePage) {
+    remotePage = pages[0];
+    await remotePage.goto(config.flexBaseUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+  }
+
+  const cookieStr = await remotePage.evaluate(() => document.cookie);
+
+  // CDP 연결 해제 (사용자 브라우저는 닫지 않음)
+  remoteBrowser.close().catch(() => {});
 
   if (!cookieStr) {
-    throw new Error("Playwriter에서 쿠키를 가져올 수 없습니다. Chrome에서 flex.team에 로그인되어 있는지 확인하세요.");
+    throw new Error(
+      "Playwriter에서 쿠키를 가져올 수 없습니다. " +
+      "Chrome에서 flex.team에 로그인되어 있는지 확인하세요.",
+    );
   }
 
-  logger.info(`쿠키 ${cookieStr.split(";").length}개 확보`);
-
-  // 3. headless 브라우저에 쿠키 주입
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
-
-  // document.cookie 문자열을 파싱하여 Playwright 쿠키로 변환
   const parsedCookies = cookieStr.split(";").map((pair) => {
     const [name, ...rest] = pair.trim().split("=");
     return {
@@ -210,12 +196,15 @@ async function authenticatePlaywriter(
     };
   }).filter((c) => c.name && c.value);
 
+  logger.info(`쿠키 ${parsedCookies.length}개 확보`);
+
+  // 3. headless 브라우저에 쿠키 주입
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
   await context.addCookies(parsedCookies);
 
   const page = await context.newPage();
-  const authHeaders: Record<string, string> = {
-    cookie: cookieStr,
-  };
+  const authHeaders: Record<string, string> = { cookie: cookieStr };
   setupHeaderCapture(page, authHeaders, config.flexBaseUrl);
 
   // 4. 쿠키가 유효한지 확인
@@ -227,7 +216,7 @@ async function authenticatePlaywriter(
     throw new Error("Playwriter에서 가져온 쿠키가 만료되었습니다. Chrome에서 flex.team에 다시 로그인하세요.");
   }
 
-  console.log("[FLEX-AX:AUTH] Playwriter 세션으로 로그인 성공");
+  console.log("[FLEX-AX:AUTH] Playwriter CDP relay로 로그인 성공");
   return { browser, context, page, authHeaders };
 }
 
