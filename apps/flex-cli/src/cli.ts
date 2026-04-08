@@ -17,6 +17,12 @@ process.argv = [process.argv[0], process.argv[1], ...rawArgs];
 
 const command = rawArgs[0];
 
+if (command === "--version" || command === "-v") {
+  const { version } = await import("../package.json", { with: { type: "json" } });
+  console.log(`flex-ax ${version}`);
+  process.exit(0);
+}
+
 switch (command) {
   case "crawl": {
     const { runCrawl } = await import("./commands/crawl.js");
@@ -59,6 +65,7 @@ Commands:
   install-skills  에이전트 스킬을 .claude/skills/에 설치
 
 Options:
-  --auth <mode>   인증 모드: credentials | sso | playwriter`);
+  --auth <mode>   인증 모드: credentials | sso | playwriter
+  --version, -v   버전 출력`);
     process.exit(command === "help" ? 0 : 1);
 }
