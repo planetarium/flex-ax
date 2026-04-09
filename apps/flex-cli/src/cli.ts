@@ -53,6 +53,11 @@ switch (command) {
     await runInstallSkills();
     break;
   }
+  case "update": {
+    const { runUpdate } = await import("./commands/update.js");
+    await runUpdate();
+    break;
+  }
   default:
     if (command && command !== "help") {
       console.error(`[FLEX-AX:ERROR] Unknown command: ${command}`);
@@ -67,6 +72,7 @@ Commands:
                   --var key=value  {{key}} 플레이스홀더 치환 (반복 가능)
   file <fileKey>  파일 내용 출력 (--info로 메타데이터만)
   install-skills  에이전트 스킬을 .claude/skills/에 설치
+  update          최신 버전으로 업데이트
 
 Options:
   --auth <mode>   인증 모드: credentials | sso | playwriter
