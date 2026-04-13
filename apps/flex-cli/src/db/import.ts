@@ -41,11 +41,6 @@ export async function importToSqlite(
   const schema = await readFile(schemaPath, "utf-8");
   db.exec(schema);
 
-  const schemaV2Path = path.join(__dirname, "schema_v2.sql");
-  if (existsSync(schemaV2Path)) {
-    const schemaV2 = await readFile(schemaV2Path, "utf-8");
-    db.exec(schemaV2);
-  }
 
   // 사용자 수집용
   const users = new Map<string, { name: string; aliases: Set<string> }>();
