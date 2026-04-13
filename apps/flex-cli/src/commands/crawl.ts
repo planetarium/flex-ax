@@ -7,6 +7,7 @@ import type { ApiCatalog } from "../types/catalog.js";
 import { crawlTemplates } from "../crawlers/template.js";
 import { crawlInstances } from "../crawlers/instance.js";
 import { crawlAttendanceApprovals } from "../crawlers/attendance.js";
+import { crawlCatalogEndpoints } from "../crawlers/catalog-endpoints.js";
 import type { CrawlError } from "../types/common.js";
 import type { CrawlResult } from "../crawlers/shared.js";
 
@@ -57,6 +58,7 @@ export async function runCrawl(): Promise<void> {
   let templateResult: CrawlResult = { totalCount: 0, successCount: 0, failureCount: 0, errors: [], durationMs: 0 };
   let instanceResult: CrawlResult = { totalCount: 0, successCount: 0, failureCount: 0, errors: [], durationMs: 0 };
   let attendanceResult: CrawlResult = { totalCount: 0, successCount: 0, failureCount: 0, errors: [], durationMs: 0 };
+  let catalogEndpointsResult: CrawlResult = { totalCount: 0, successCount: 0, failureCount: 0, errors: [], durationMs: 0 };
 
   try {
     templateResult = await crawlTemplates(authCtx, config, catalog, storage, logger);
@@ -65,6 +67,7 @@ export async function runCrawl(): Promise<void> {
     attendanceResult = await crawlAttendanceApprovals(
       authCtx, config, catalog, storage, logger, instanceCrawlResult.collectedKeys,
     );
+    catalogEndpointsResult = await crawlCatalogEndpoints(authCtx, config, catalog, storage, logger);
   } finally {
     await cleanup(authCtx);
   }
@@ -74,6 +77,7 @@ export async function runCrawl(): Promise<void> {
     ...templateResult.errors,
     ...instanceResult.errors,
     ...attendanceResult.errors,
+    ...catalogEndpointsResult.errors,
   ];
 
   const report: CrawlReport = {
@@ -83,13 +87,14 @@ export async function runCrawl(): Promise<void> {
     templates: templateResult,
     instances: instanceResult,
     attendance: attendanceResult,
+    catalogEndpoints: catalogEndpointsResult,
     totalErrors,
   };
 
   await storage.saveReport(report);
 
   // 구조화된 출력
-  console.log(`[FLEX-AX:CRAWL] 크롤링 완료: templates=${templateResult.successCount}, instances=${instanceResult.successCount}, attendance=${attendanceResult.successCount}`);
+  console.log(`[FLEX-AX:CRAWL] 크롤링 완료: templates=${templateResult.successCount}, instances=${instanceResult.successCount}, attendance=${attendanceResult.successCount}, endpoints=${catalogEndpointsResult.successCount}`);
 
   if (totalErrors.length > 0) {
     for (const err of totalErrors) {

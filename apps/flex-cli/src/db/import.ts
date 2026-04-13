@@ -1,9 +1,10 @@
 import Database from "better-sqlite3";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../logger/index.js";
+import { importEndpoints } from "./import-endpoints.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -16,6 +17,7 @@ export interface ImportResult {
   approvalLines: number;
   comments: number;
   attachments: number;
+  endpoints: Record<string, number>;
 }
 
 export async function importToSqlite(
@@ -26,6 +28,7 @@ export async function importToSqlite(
   const result: ImportResult = {
     templates: 0, instances: 0, attendance: 0, users: 0,
     fieldValues: 0, approvalLines: 0, comments: 0, attachments: 0,
+    endpoints: {},
   };
 
   // DB 초기화
@@ -33,10 +36,16 @@ export async function importToSqlite(
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = OFF"); // 임포트 순서 무관하게 처리, 완료 후 체크
 
-  // schema.sql은 빌드 시 dist/db/로 복사됨 (package.json build 스크립트 참고)
+  // schema.sql + schema_v2.sql 로드
   const schemaPath = path.join(__dirname, "schema.sql");
   const schema = await readFile(schemaPath, "utf-8");
   db.exec(schema);
+
+  const schemaV2Path = path.join(__dirname, "schema_v2.sql");
+  if (existsSync(schemaV2Path)) {
+    const schemaV2 = await readFile(schemaV2Path, "utf-8");
+    db.exec(schemaV2);
+  }
 
   // 사용자 수집용
   const users = new Map<string, { name: string; aliases: Set<string> }>();
@@ -187,6 +196,12 @@ export async function importToSqlite(
   importAttendance();
   if (result.attendance > 0) {
     logger.info(`근태/휴가 ${result.attendance}건 임포트`);
+  }
+
+  // === Endpoints (v2 schema) ===
+  const endpointsDir = path.join(outputDir, "endpoints");
+  if (existsSync(endpointsDir)) {
+    result.endpoints = importEndpoints(db, endpointsDir, upsertUser, logger);
   }
 
   // === Users ===

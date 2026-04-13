@@ -136,12 +136,12 @@ async function getUserId(
   try {
     // /api/v2/core/me는 404이므로, workspace-users에서 currentUser를 가져옴
     const data = await flexFetch<{
-      currentUser?: { userIdHash?: string };
+      currentUser?: { user?: { userIdHash?: string } };
     }>(
       authCtx,
       `${config.flexBaseUrl}/api/v2/core/users/me/workspace-users-corp-group-affiliates`,
     );
-    const userId = data.currentUser?.userIdHash ?? null;
+    const userId = data.currentUser?.user?.userIdHash ?? null;
     if (userId) {
       logger.info(`사용자 ID 확인: ${userId}`);
     }
