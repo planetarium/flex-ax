@@ -11,19 +11,24 @@ import {
   nowISO,
   withRetry,
   flexFetch,
-  resolveUrl,
 } from "./shared.js";
 
-const ATTENDANCE_ENDPOINTS = [
-  { id: "timeoff-requests", fallback: "/api/v2/time-off/users/me/time-off-requests" },
-  { id: "overtime-requests", fallback: "/api/v2/time-tracking/users/me/overtime-requests" },
-  { id: "workchange-requests", fallback: "/api/v2/time-tracking/users/me/work-change-requests" },
-] as const;
-
+/**
+ * 근태/휴가 승인 수집.
+ *
+ * 디스커버리 결과, 기존 하드코딩 API는 404:
+ *   - /api/v2/time-off/users/me/time-off-requests
+ *   - /api/v2/time-tracking/users/me/overtime-requests
+ *   - /api/v2/time-tracking/users/me/work-change-requests
+ *
+ * 실제 API (카탈로그에서 발견):
+ *   - GET /api/v2/time-off/users/{userId}/time-off-uses/by-use-date-range/{from}..{to}
+ *     → timeOffUses[] 배열 반환
+ */
 export async function crawlAttendanceApprovals(
   authCtx: AuthContext,
   config: Config,
-  catalog: ApiCatalog | null,
+  _catalog: ApiCatalog | null,
   storage: StorageWriter,
   logger: Logger,
   collectedInstanceKeys: Set<string>,
@@ -33,66 +38,97 @@ export async function crawlAttendanceApprovals(
 
   logger.info("근태/휴가 승인 수집 시작");
 
-  for (const endpoint of ATTENDANCE_ENDPOINTS) {
-    const url = resolveUrl(config.flexBaseUrl, catalog, endpoint.id, endpoint.fallback);
+  // 현재 사용자 ID를 먼저 확인
+  const userId = await getUserId(authCtx, config, logger);
+  if (!userId) {
+    logger.error("사용자 ID를 확인할 수 없습니다");
+    result.failureCount++;
+    result.errors.push({
+      target: "user-id-lookup",
+      phase: "list",
+      message: "사용자 ID 조회 실패 — workspace-users 응답에서 currentUser.user.userIdHash를 찾지 못함",
+      timestamp: nowISO(),
+    });
+    result.durationMs = Date.now() - startTime;
+    return result;
+  }
 
-    try {
-      const data = await withRetry(
-        () => flexFetch<Record<string, unknown>>(authCtx, url),
-        { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
-      );
+  // 최근 1년 범위로 휴가 사용 내역 조회
+  const now = Date.now();
+  const oneYearAgo = now - 365 * 24 * 60 * 60 * 1000;
+  const url = `${config.flexBaseUrl}/api/v2/time-off/users/${userId}/time-off-uses/by-use-date-range/${oneYearAgo}..${now}`;
 
-      const items = extractItems(data);
-      logger.info(`${endpoint.id}: ${items.length}건 발견`);
+  try {
+    const data = await withRetry(
+      () => flexFetch<TimeOffUsesResponse>(authCtx, url),
+      { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
+    );
 
-      for (const item of items) {
-        const id = String(item.id ?? item.requestId ?? item.idHash ?? "");
-        if (!id) continue;
+    const uses = data.timeOffUses ?? [];
+    logger.info(`휴가 사용 내역: ${uses.length}건 발견`);
 
-        if (collectedInstanceKeys.has(id)) {
-          logger.info(`중복 스킵: ${id} (인스턴스에서 이미 수집)`);
-          continue;
-        }
+    for (const use of uses) {
+      const id = use.userTimeOffRegisterEventId;
+      if (!id) continue;
 
-        result.totalCount++;
-
-        try {
-          const approval: AttendanceApproval = {
-            id,
-            type: String(item.type ?? item.category ?? endpoint.id),
-            applicant: {
-              name: String((item.applicant as Record<string, unknown>)?.name ?? (item.requester as Record<string, unknown>)?.name ?? "unknown"),
-              id: ((item.applicant as Record<string, unknown>)?.idHash as string) || undefined,
-            },
-            appliedAt: String(item.appliedAt ?? item.requestedAt ?? item.createdAt ?? ""),
-            details: extractDetails(item),
-            status: String(item.status ?? "unknown"),
-            approver: item.approver ? {
-              name: String((item.approver as Record<string, unknown>).name ?? ""),
-            } : undefined,
-            processedAt: item.processedAt ? String(item.processedAt) : undefined,
-            _raw: item,
-          };
-
-          await storage.saveAttendanceApproval(approval);
-          result.successCount++;
-        } catch (error) {
-          result.failureCount++;
-          result.errors.push({
-            target: `attendance:${id}`,
-            phase: "detail",
-            message: error instanceof Error ? error.message : String(error),
-            timestamp: nowISO(),
-          });
-        }
-
-        await delay(config.requestDelayMs);
+      if (collectedInstanceKeys.has(id)) {
+        logger.info(`중복 스킵: ${id} (인스턴스에서 이미 수집)`);
+        continue;
       }
-    } catch (error) {
-      logger.warn(`${endpoint.id} 접근 실패 (스킵)`, {
-        error: error instanceof Error ? error.message : String(error),
-      });
+
+      result.totalCount++;
+
+      try {
+        const approval: AttendanceApproval = {
+          id,
+          type: use.timeOffPolicyType ?? "TIME_OFF",
+          applicant: {
+            id: use.userIdHash,
+            // 이름은 이 엔드포인트에서 제공되지 않으므로 비워둔다.
+            // import 단계의 upsertUser가 placeholder로 등록하고,
+            // 다른 엔드포인트에서 실제 이름이 들어오면 자동 갱신한다.
+            name: "",
+          },
+          appliedAt: use.timeOffRegisterDateFrom ?? "",
+          details: {
+            dateFrom: use.timeOffRegisterDateFrom,
+            dateTo: use.timeOffRegisterDateTo,
+            days: use.useTime?.timeOffDays,
+            minutes: use.useTime?.timeOffMinutes,
+            policyType: use.timeOffPolicyType,
+            canceled: use.canceled,
+          },
+          status: mapStatus(use.timeOffUseStatus, use.approvalStatus?.status),
+          processedAt: use.timeOffRegisteredAt
+            ? new Date(use.timeOffRegisteredAt).toISOString()
+            : undefined,
+          _raw: use,
+        };
+
+        await storage.saveAttendanceApproval(approval);
+        result.successCount++;
+      } catch (error) {
+        result.failureCount++;
+        result.errors.push({
+          target: `attendance:${id}`,
+          phase: "detail",
+          message: error instanceof Error ? error.message : String(error),
+          timestamp: nowISO(),
+        });
+      }
+
+      await delay(config.requestDelayMs);
     }
+  } catch (error) {
+    logger.warn("휴가 사용 내역 수집 실패", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    result.errors.push({
+      target: "time-off-uses",
+      phase: "list",
+      message: error instanceof Error ? error.message : String(error),
+      timestamp: nowISO(),
+    });
   }
 
   result.durationMs = Date.now() - startTime;
@@ -100,28 +136,80 @@ export async function crawlAttendanceApprovals(
   return result;
 }
 
-function extractItems(data: Record<string, unknown>): Array<Record<string, unknown>> {
-  for (const key of Object.keys(data)) {
-    if (Array.isArray(data[key])) return data[key] as Array<Record<string, unknown>>;
-  }
-  if (data.data && typeof data.data === "object") {
-    const inner = data.data as Record<string, unknown>;
-    for (const key of Object.keys(inner)) {
-      if (Array.isArray(inner[key])) return inner[key] as Array<Record<string, unknown>>;
+// --- 사용자 ID 조회 ---
+
+async function getUserId(
+  authCtx: AuthContext,
+  config: Config,
+  logger: Logger,
+): Promise<string | null> {
+  try {
+    // /api/v2/core/me는 404이므로, workspace-users에서 currentUser를 가져옴.
+    // 다른 크롤러 호출들과 동일하게 일시적 네트워크/서버 오류를 withRetry로 흡수한다.
+    const data = await withRetry(
+      () =>
+        flexFetch<{
+          currentUser?: { user?: { userIdHash?: string } };
+        }>(
+          authCtx,
+          `${config.flexBaseUrl}/api/v2/core/users/me/workspace-users-corp-group-affiliates`,
+        ),
+      { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
+    );
+    const userId = data.currentUser?.user?.userIdHash ?? null;
+    if (userId) {
+      logger.info(`사용자 ID 확인: ${userId}`);
     }
+    return userId;
+  } catch (error) {
+    logger.warn("사용자 정보 조회 실패", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
   }
-  return [];
 }
 
-function extractDetails(item: Record<string, unknown>): Record<string, unknown> {
-  const details: Record<string, unknown> = {};
-  const keys = [
-    "targetDate", "startDate", "endDate", "startAt", "endAt",
-    "workType", "leaveType", "timeOffType", "reason", "memo",
-    "duration", "hours", "days", "shiftType",
-  ];
-  for (const key of keys) {
-    if (item[key] !== undefined) details[key] = item[key];
-  }
-  return details;
+// --- flex API 응답 타입 ---
+
+interface TimeOffUsesResponse {
+  timeOffUses?: Array<{
+    userTimeOffRegisterEventId: string;
+    timeOffUseStatus: string;
+    customerIdHash: string;
+    userIdHash: string;
+    timeOffRegisterDateFrom?: string;
+    timeOffRegisterDateTo?: string;
+    timeOffPolicyId?: string;
+    timeOffPolicyType?: string;
+    useTime?: {
+      timeOffDays: number;
+      timeOffMinutes: number;
+      timeOffTimeAmount?: {
+        days: number;
+        hours: number;
+        minutes: number;
+      };
+    };
+    approvalStatus?: {
+      status: string;
+      taskKey?: string;
+    };
+    cancelApprovalInProgress?: boolean;
+    timeOffRegisteredAt?: number;
+    canceled?: boolean;
+  }>;
+  hasNext?: boolean;
+}
+
+function mapStatus(useStatus?: string, approvalStatus?: string): string {
+  const status = approvalStatus ?? useStatus ?? "unknown";
+  const statusMap: Record<string, string> = {
+    APPROVED: "approved",
+    APPROVAL_COMPLETED: "approved",
+    REJECTED: "rejected",
+    CANCELED: "canceled",
+    IN_PROGRESS: "in_progress",
+    PENDING: "pending",
+  };
+  return statusMap[status] ?? status.toLowerCase();
 }

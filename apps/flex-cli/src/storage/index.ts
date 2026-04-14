@@ -14,6 +14,7 @@ export interface CrawlReport {
   templates: CrawlResult;
   instances: CrawlResult;
   attendance: CrawlResult;
+  catalogEndpoints?: CrawlResult;
   totalErrors: CrawlError[];
 }
 
@@ -22,6 +23,7 @@ export interface StorageWriter {
   saveInstance(instance: WorkflowInstance): Promise<void>;
   saveAttendanceApproval(approval: AttendanceApproval): Promise<void>;
   saveAttachment(instanceId: string, fileName: string, data: Buffer, fileKey?: string): Promise<string>;
+  saveEndpointData(endpointId: string, data: unknown): Promise<void>;
   saveReport(report: CrawlReport): Promise<void>;
   saveCatalog(catalog: ApiCatalog): Promise<void>;
 }
@@ -62,6 +64,11 @@ export function createStorageWriter(outputDir: string, catalogPath: string): Sto
       const filePath = path.join(dir, safeName);
       await writeFile(filePath, data);
       return filePath;
+    },
+
+    async saveEndpointData(endpointId, data) {
+      const safeId = path.basename(endpointId).replace(/[<>:"|?*]/g, "_");
+      await writeJson(path.join(outputDir, "endpoints", `${safeId}.json`), data);
     },
 
     async saveReport(report) {

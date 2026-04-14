@@ -1,9 +1,10 @@
 import Database from "better-sqlite3";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../logger/index.js";
+import { importEndpoints } from "./import-endpoints.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -16,6 +17,7 @@ export interface ImportResult {
   approvalLines: number;
   comments: number;
   attachments: number;
+  endpoints: Record<string, number>;
 }
 
 export async function importToSqlite(
@@ -26,6 +28,7 @@ export async function importToSqlite(
   const result: ImportResult = {
     templates: 0, instances: 0, attendance: 0, users: 0,
     fieldValues: 0, approvalLines: 0, comments: 0, attachments: 0,
+    endpoints: {},
   };
 
   // DB 초기화
@@ -33,7 +36,7 @@ export async function importToSqlite(
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = OFF"); // 임포트 순서 무관하게 처리, 완료 후 체크
 
-  // schema.sql은 빌드 시 dist/db/로 복사됨 (package.json build 스크립트 참고)
+  // schema.sql 로드
   const schemaPath = path.join(__dirname, "schema.sql");
   const schema = await readFile(schemaPath, "utf-8");
   db.exec(schema);
@@ -41,15 +44,31 @@ export async function importToSqlite(
   // 사용자 수집용
   const users = new Map<string, { name: string; aliases: Set<string> }>();
 
-  function upsertUser(id: string | undefined, name: string): void {
-    if (!id || !name || name === "unknown") return;
+  const PLACEHOLDER_NAME = "(unknown)";
+
+  /**
+   * 사용자 정보를 수집한다.
+   * - id만 있고 이름이 없거나 "unknown"이면 placeholder로 저장 (FK 무결성 확보)
+   * - 같은 id가 placeholder로 먼저 저장된 후 실제 이름이 들어오면 이름을 갱신
+   * - 같은 id에 여러 실제 이름이 들어오면 aliases에 축적
+   */
+  function upsertUser(id: string | undefined, name: string | undefined | null): void {
+    if (!id) return;
+    const trimmed = (name ?? "").trim();
+    const isRealName =
+      trimmed.length > 0 && trimmed !== "unknown" && trimmed !== PLACEHOLDER_NAME;
+    const effectiveName = isRealName ? trimmed : PLACEHOLDER_NAME;
     const existing = users.get(id);
     if (existing) {
-      if (existing.name !== name) {
-        existing.aliases.add(name);
+      if (isRealName) {
+        if (existing.name === PLACEHOLDER_NAME) {
+          existing.name = effectiveName;
+        } else if (existing.name !== effectiveName) {
+          existing.aliases.add(effectiveName);
+        }
       }
     } else {
-      users.set(id, { name, aliases: new Set() });
+      users.set(id, { name: effectiveName, aliases: new Set() });
     }
   }
 
@@ -187,6 +206,12 @@ export async function importToSqlite(
   importAttendance();
   if (result.attendance > 0) {
     logger.info(`근태/휴가 ${result.attendance}건 임포트`);
+  }
+
+  // === Endpoints (v2 schema) ===
+  const endpointsDir = path.join(outputDir, "endpoints");
+  if (existsSync(endpointsDir)) {
+    result.endpoints = importEndpoints(db, endpointsDir, upsertUser, logger);
   }
 
   // === Users ===
