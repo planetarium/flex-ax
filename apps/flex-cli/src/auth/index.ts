@@ -306,12 +306,15 @@ export async function listCorporations(authCtx: AuthContext, baseUrl: string): P
  *
  * 인증 방식: 워크스페이스 레벨 JWT(V2_WS_AID 쿠키)를 `flexteam-v2-workspace-access`
  * 헤더로 전달하면, 서버가 해당 법인 스코프의 고객 JWT를 반환한다.
+ *
+ * @param customerIdHash  법인 식별자. API 바디에는 `customerUuid` 필드로 전달된다.
+ * @param userIdHash      해당 법인에서의 사용자 식별자. API 바디에는 `userUuid` 필드로 전달된다.
  */
 export async function switchCustomer(
   authCtx: AuthContext,
   baseUrl: string,
-  customerUuid: string,
-  userUuid: string,
+  customerIdHash: string,
+  userIdHash: string,
 ): Promise<void> {
   const url = `${baseUrl}/api-public/v2/auth/tokens/customer-user/exchange`;
   const wsAid = extractCookieValue(authCtx.authHeaders["cookie"] ?? "", "V2_WS_AID");
@@ -328,6 +331,9 @@ export async function switchCustomer(
     "x-flex-axios": "base",
   };
 
+  // API 바디 필드명은 customerUuid/userUuid지만 실제 값은 hash 식별자다
+  const body = JSON.stringify({ customerUuid: customerIdHash, userUuid: userIdHash });
+
   const result = await authCtx.page.evaluate(
     async ([fetchUrl, headers, bodyStr]) => {
       const res = await fetch(fetchUrl, {
@@ -336,16 +342,16 @@ export async function switchCustomer(
         body: bodyStr as string,
       });
       if (!res.ok) {
-        const body = await res.text();
-        throw new Error(`HTTP ${res.status}: ${fetchUrl} — ${body.slice(0, 200)}`);
+        const errBody = await res.text();
+        throw new Error(`HTTP ${res.status}: ${fetchUrl} — ${errBody.slice(0, 200)}`);
       }
       return (await res.json()) as { token: string };
     },
-    [url, exchangeHeaders, JSON.stringify({ customerUuid, userUuid })] as const,
+    [url, exchangeHeaders, body] as const,
   );
 
   if (!result?.token) {
-    throw new Error(`회사 전환 토큰 발급 실패: customerUuid=${customerUuid}`);
+    throw new Error(`회사 전환 토큰 발급 실패: customerIdHash=${customerIdHash}`);
   }
 
   authCtx.authHeaders["x-flex-aid"] = result.token;

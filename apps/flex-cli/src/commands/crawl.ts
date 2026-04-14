@@ -143,6 +143,7 @@ async function runCrawlForCustomer(
   let instanceResult: CrawlResult = emptyResult();
   let attendanceResult: CrawlResult = emptyResult();
   let catalogEndpointsResult: CrawlResult = emptyResult();
+  let fatalError: CrawlError | null = null;
 
   try {
     templateResult = await crawlTemplates(authCtx, config, catalog, storage, logger);
@@ -154,15 +155,16 @@ async function runCrawlForCustomer(
     catalogEndpointsResult = await crawlCatalogEndpoints(authCtx, config, catalog, storage, logger);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    logger.error("법인 크롤링 중 예외", { customerIdHash: corp.customerIdHash, error: message });
-    return [
-      {
-        target: `customer:${corp.customerIdHash}`,
-        phase: "crawl",
-        message,
-        timestamp: new Date().toISOString(),
-      },
-    ];
+    logger.error("법인 크롤링 중 예외 — 지금까지의 부분 결과를 보고서에 기록합니다", {
+      customerIdHash: corp.customerIdHash,
+      error: message,
+    });
+    fatalError = {
+      target: `customer:${corp.customerIdHash}`,
+      phase: "crawl",
+      message,
+      timestamp: new Date().toISOString(),
+    };
   }
 
   const completedAt = new Date().toISOString();
@@ -172,6 +174,7 @@ async function runCrawlForCustomer(
     ...attendanceResult.errors,
     ...catalogEndpointsResult.errors,
   ].map((e) => ({ ...e, target: `${corp.customerIdHash}/${e.target}` }));
+  if (fatalError) totalErrors.push(fatalError);
 
   const report: CrawlReport = {
     startedAt,
@@ -184,10 +187,19 @@ async function runCrawlForCustomer(
     totalErrors,
   };
 
-  await storage.saveReport(report);
+  // 예외 상황에서도 디버깅 가능하도록 보고서는 반드시 저장
+  try {
+    await storage.saveReport(report);
+  } catch (saveError) {
+    logger.error("크롤 보고서 저장 실패", {
+      customerIdHash: corp.customerIdHash,
+      error: saveError instanceof Error ? saveError.message : String(saveError),
+    });
+  }
 
+  const statusLabel = fatalError ? "중단(부분 결과)" : "완료";
   console.log(
-    `[FLEX-AX:CRAWL] ${corp.name} (${corp.customerIdHash}) 완료: ` +
+    `[FLEX-AX:CRAWL] ${corp.name} (${corp.customerIdHash}) ${statusLabel}: ` +
       `templates=${templateResult.successCount}, instances=${instanceResult.successCount}, ` +
       `attendance=${attendanceResult.successCount}, endpoints=${catalogEndpointsResult.successCount}`,
   );

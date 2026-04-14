@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, type Dirent } from "node:fs";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig, type Config } from "../config/index.js";
@@ -18,7 +18,7 @@ export async function runImport(): Promise<void> {
     process.exit(1);
   }
 
-  const customerDirs = await discoverCustomerDirs(config.outputDir);
+  const customerDirs = await discoverCustomerDirs(config.outputDir, logger);
 
   if (customerDirs.length === 0) {
     // 레거시(법인 분리 전) 구조 폴백
@@ -62,10 +62,25 @@ async function importOne(sourceDir: string, dbDir: string, logger: Logger): Prom
 /**
  * outputDir 바로 아래에서 크롤 아티팩트(templates/ 등)를 가진 하위 디렉토리를 찾는다.
  * 각 하위 디렉토리는 하나의 법인(customerIdHash)에 해당한다.
+ *
+ * 경로가 존재하지 않거나 읽기에 실패하면 빈 배열을 반환한다 — 호출부가
+ * "법인 분리 없음"으로 간주해 레거시 단일 구조 폴백으로 이어갈 수 있게 한다.
  */
-async function discoverCustomerDirs(outputDir: string): Promise<string[]> {
+async function discoverCustomerDirs(
+  outputDir: string,
+  logger: Logger,
+): Promise<string[]> {
   if (!existsSync(outputDir)) return [];
-  const entries = await readdir(outputDir, { withFileTypes: true });
+  let entries: Dirent[];
+  try {
+    entries = await readdir(outputDir, { withFileTypes: true });
+  } catch (error) {
+    logger.warn("output 디렉토리 스캔 실패 — 단일 구조로 폴백합니다", {
+      outputDir,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
   const dirs: string[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
