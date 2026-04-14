@@ -23,6 +23,17 @@ const HANDLED_BY_DEDICATED_CRAWLERS = new Set([
 ]);
 
 /**
+ * read-only로 안전하게 호출 가능한 POST URL 패턴.
+ * search/get/find/query/lookup/list/count 류 또는 .options/.permissions 만 허용.
+ * 그 외 POST는 생성/변경 가능성이 있으므로 크롤러가 호출하지 않는다.
+ */
+const SAFE_POST_PATTERN = /(search|get-?|find-?|query|lookup|list|count|\.options$|\.permissions$|menu-types|topics|stakeholder|convert-to-lunar|granted-menu-types|feedbacks\/get-)/i;
+
+function isSafePost(pathname: string): boolean {
+  return SAFE_POST_PATTERN.test(pathname);
+}
+
+/**
  * flexFetch/flexPost가 던지는 에러 메시지(`HTTP {status}: {url}`)에서
  * status code를 파싱하여 4xx 여부를 판단한다.
  */
@@ -64,6 +75,13 @@ export async function crawlCatalogEndpoints(
     if (entry.method !== "GET" && entry.method !== "POST") {
       logger.info(
         `카탈로그 엔드포인트 스킵: ${entry.id} (method=${entry.method}, 읽기 전용 아님)`,
+      );
+      continue;
+    }
+    // POST는 search/get/.options/.permissions 등 명시적으로 안전한 패턴만 허용
+    if (entry.method === "POST" && !isSafePost(entry.urlPattern)) {
+      logger.info(
+        `카탈로그 엔드포인트 스킵: ${entry.id} (POST이지만 read-only allowlist 미일치)`,
       );
       continue;
     }

@@ -158,6 +158,34 @@ function extractQueryParams(url: string): Record<string, string> | undefined {
   return Object.keys(params).length > 0 ? params : undefined;
 }
 
+/** 민감 정보로 추정되는 필드명 */
+const SENSITIVE_FIELD_RE = /(ssn|password|token|secret|auth|phone|email|address|birth|account|salary|amount|name)/i;
+
+/**
+ * 카탈로그 sample에서 실제 값을 제거하고 타입 정보만 남긴다.
+ * - PII/민감 정보가 api-catalog.json에 영구 저장되는 것을 방지한다.
+ * - 카탈로그의 목적은 "스키마/패턴" 보존이므로 값 자체는 불필요하다.
+ */
+function maskSample(value: unknown, key?: string): unknown {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    return value.length > 0 ? [maskSample(value[0])] : [];
+  }
+  if (typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      result[k] = maskSample(v, k);
+    }
+    return result;
+  }
+  // primitive: 민감 필드면 마스킹, 그 외는 타입 placeholder
+  if (key && SENSITIVE_FIELD_RE.test(key)) return "***";
+  if (typeof value === "string") return "<string>";
+  if (typeof value === "number") return 0;
+  if (typeof value === "boolean") return false;
+  return null;
+}
+
 /** 캡처된 요청에 ID를 매칭 */
 function matchEndpointId(method: string, url: string): string | null {
   const pathname = new URL(url).pathname;
@@ -193,9 +221,9 @@ export function buildCatalog(
       urlPattern,
       exampleUrl: new URL(capture.url).pathname + new URL(capture.url).search,
       queryParams: extractQueryParams(capture.url),
-      requestBodySample: capture.requestBody,
+      requestBodySample: maskSample(capture.requestBody),
       statusCode: capture.statusCode,
-      responseBodySample: capture.responseBody,
+      responseBodySample: maskSample(capture.responseBody),
       totalItems: capture.totalItems,
       capturedAt: capture.capturedAt,
     };
