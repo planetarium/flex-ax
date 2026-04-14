@@ -97,6 +97,19 @@ export async function runCrawl(): Promise<void> {
   const allErrors: CrawlError[] = [];
   try {
     for (const corp of corporations) {
+      if (!isSafeIdHash(corp.customerIdHash)) {
+        logger.error("customerIdHash 형식이 안전하지 않아 스킵", {
+          customerIdHash: corp.customerIdHash,
+          name: corp.name,
+        });
+        allErrors.push({
+          target: `customer:${corp.customerIdHash}`,
+          phase: "validate-customer",
+          message: `unsafe customerIdHash: ${corp.customerIdHash}`,
+          timestamp: new Date().toISOString(),
+        });
+        continue;
+      }
       logger.info("법인 전환", { customerIdHash: corp.customerIdHash, name: corp.name });
       try {
         await switchCustomer(authCtx, config.flexBaseUrl, corp.customerIdHash, corp.userIdHash);
@@ -205,6 +218,15 @@ async function runCrawlForCustomer(
   );
 
   return totalErrors;
+}
+
+/**
+ * flex API에서 오는 ID 해시는 통상 영숫자 10자 내외다.
+ * 외부 입력이 디렉토리 경로로 쓰이므로 path traversal을 방지하기 위해
+ * 허용 문자셋을 엄격히 제한한다.
+ */
+function isSafeIdHash(id: string): boolean {
+  return typeof id === "string" && id.length > 0 && id.length <= 64 && /^[A-Za-z0-9_-]+$/.test(id);
 }
 
 function emptyResult(): CrawlResult {

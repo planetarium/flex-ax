@@ -23,6 +23,15 @@ export async function runImport(): Promise<void> {
   if (customerDirs.length === 0) {
     // 레거시(법인 분리 전) 구조 폴백
     if (hasCrawlArtifacts(config.outputDir)) {
+      // FLEX_CUSTOMERS 필터가 있는데 법인 구조 자체가 없으면 사용자 의도와 어긋남 — 중단
+      if (config.customers.length > 0) {
+        logger.error(
+          "FLEX_CUSTOMERS가 지정됐지만 outputDir이 법인별로 분리되어 있지 않습니다. " +
+            "크롤을 먼저 실행해 법인별 디렉토리를 생성하거나, 필터를 제거해 주세요.",
+          { customers: config.customers, outputDir: config.outputDir },
+        );
+        process.exit(1);
+      }
       await importOne(config.outputDir, config.outputDir, logger);
       return;
     }
