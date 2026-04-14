@@ -42,6 +42,13 @@ export async function crawlAttendanceApprovals(
   const userId = await getUserId(authCtx, config, logger);
   if (!userId) {
     logger.error("사용자 ID를 확인할 수 없습니다");
+    result.failureCount++;
+    result.errors.push({
+      target: "user-id-lookup",
+      phase: "list",
+      message: "사용자 ID 조회 실패 — workspace-users 응답에서 currentUser.user.userIdHash를 찾지 못함",
+      timestamp: nowISO(),
+    });
     result.durationMs = Date.now() - startTime;
     return result;
   }

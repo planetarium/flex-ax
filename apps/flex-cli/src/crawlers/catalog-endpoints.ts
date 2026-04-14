@@ -23,6 +23,18 @@ const HANDLED_BY_DEDICATED_CRAWLERS = new Set([
 ]);
 
 /**
+ * flexFetch/flexPost가 던지는 에러 메시지(`HTTP {status}: {url}`)에서
+ * status code를 파싱하여 4xx 여부를 판단한다.
+ */
+function is4xxError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const m = err.message.match(/^HTTP (\d{3}):/);
+  if (!m) return false;
+  const status = Number(m[1]);
+  return status >= 400 && status < 500;
+}
+
+/**
  * 카탈로그의 모든 분류된 엔드포인트를 순회하며 데이터를 수집한다.
  * 기존 전용 크롤러(template, instance, attendance)가 처리하는 항목은 제외.
  */
@@ -76,7 +88,13 @@ export async function crawlCatalogEndpoints(
           entry.method === "POST"
             ? flexPost<unknown>(authCtx, url, entry.requestBodySample ?? {})
             : flexFetch<unknown>(authCtx, url),
-        { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
+        {
+          maxRetries: config.maxRetries,
+          delayMs: config.requestDelayMs,
+          // 4xx는 권한 미보유/미구독 등 영구적 실패가 대부분이므로 재시도하지 않는다.
+          // (5xx와 네트워크 에러만 재시도)
+          shouldRetry: (err) => !is4xxError(err),
+        },
       );
 
       await storage.saveEndpointData(endpointId, {
