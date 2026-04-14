@@ -317,15 +317,18 @@ export async function switchCustomer(
   userIdHash: string,
 ): Promise<void> {
   const url = `${baseUrl}/api-public/v2/auth/tokens/customer-user/exchange`;
-  const wsAid = extractCookieValue(authCtx.authHeaders["cookie"] ?? "", "V2_WS_AID");
+
+  // 브라우저 컨텍스트의 실제 쿠키가 진실이다.
+  // authHeaders.cookie는 네트워크 요청이 한 번도 없었거나 쿠키가 갱신된 경우 stale일 수 있다.
+  const wsAid = await getCookieFromContext(authCtx, baseUrl, "V2_WS_AID");
   if (!wsAid) {
     throw new Error(
       "V2_WS_AID 쿠키를 찾을 수 없습니다. 워크스페이스 인증이 만료되었거나 쿠키가 누락되었습니다.",
     );
   }
 
+  // 브라우저 fetch는 컨텍스트 쿠키를 자동 첨부하므로 Cookie 헤더를 명시할 필요가 없다.
   const exchangeHeaders: Record<string, string> = {
-    cookie: authCtx.authHeaders["cookie"] ?? "",
     "content-type": "application/json",
     "flexteam-v2-workspace-access": wsAid,
     "x-flex-axios": "base",
@@ -340,6 +343,7 @@ export async function switchCustomer(
         method: "POST",
         headers: headers as Record<string, string>,
         body: bodyStr as string,
+        credentials: "include",
       });
       if (!res.ok) {
         const errBody = await res.text();
@@ -355,6 +359,25 @@ export async function switchCustomer(
   }
 
   authCtx.authHeaders["x-flex-aid"] = result.token;
+}
+
+/**
+ * 브라우저 컨텍스트에서 지정된 쿠키 값을 읽는다 (httpOnly 쿠키 포함).
+ * Playwright의 context.cookies()는 실제 쿠키 저장소를 반환하므로 stale 이슈가 없다.
+ */
+async function getCookieFromContext(
+  authCtx: AuthContext,
+  baseUrl: string,
+  name: string,
+): Promise<string | null> {
+  try {
+    const cookies = await authCtx.context.cookies(baseUrl);
+    const hit = cookies.find((c) => c.name === name);
+    if (hit) return hit.value;
+  } catch {
+    // context.cookies()가 일부 CDP 구성에서 실패할 수 있음 — headers 폴백
+  }
+  return extractCookieValue(authCtx.authHeaders["cookie"] ?? "", name);
 }
 
 function extractCookieValue(cookieStr: string, name: string): string | null {
