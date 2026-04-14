@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { ApiCatalog, CatalogEntry } from "../types/catalog.js";
-import type { CapturedRequest } from "./traffic-capture.js";
+import { normalizeUrlPath, type CapturedRequest } from "./traffic-capture.js";
 import type { DiscoveredPage } from "./navigator.js";
 
 /** 알려진 엔드포인트 패턴 → 안정적 ID 매핑 */
@@ -133,18 +133,15 @@ const ENDPOINT_PATTERNS: Array<{ id: string; method: string; pattern: RegExp }> 
   { id: "holiday-user-groups", method: "GET", pattern: /\/api\/v\d+\/holiday\/customers\/[^/]+\/users\/[^/]+\/customer-holiday-groups$/ },
 ];
 
-/** UUID-like 세그먼트를 {param}으로 일반화 */
+/**
+ * URL을 카탈로그용 안정적 패턴으로 변환한다.
+ * traffic-capture의 중복 제거 키와 동일한 정규화 규칙을 쓴다
+ * (해시/숫자 ID, 숫자 범위 등). {id}/{range} placeholder를
+ * 카탈로그 관례에 맞춰 {param}/{range}로 노출한다.
+ */
 function generalizeUrlPattern(url: string): string {
   const parsed = new URL(url);
-  const segments = parsed.pathname.split("/");
-  const generalized = segments.map((seg) => {
-    // UUID, hash ID, 긴 영숫자 문자열을 {param}으로
-    if (/^[a-f0-9-]{20,}$/i.test(seg) || /^[a-zA-Z0-9]{20,}$/.test(seg)) {
-      return "{param}";
-    }
-    return seg;
-  });
-  return generalized.join("/");
+  return normalizeUrlPath(parsed.pathname).replace(/\{id\}/g, "{param}");
 }
 
 /** URL에서 쿼리 파라미터 추출 */

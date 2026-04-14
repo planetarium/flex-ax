@@ -137,12 +137,17 @@ async function getUserId(
   logger: Logger,
 ): Promise<string | null> {
   try {
-    // /api/v2/core/me는 404이므로, workspace-users에서 currentUser를 가져옴
-    const data = await flexFetch<{
-      currentUser?: { user?: { userIdHash?: string } };
-    }>(
-      authCtx,
-      `${config.flexBaseUrl}/api/v2/core/users/me/workspace-users-corp-group-affiliates`,
+    // /api/v2/core/me는 404이므로, workspace-users에서 currentUser를 가져옴.
+    // 다른 크롤러 호출들과 동일하게 일시적 네트워크/서버 오류를 withRetry로 흡수한다.
+    const data = await withRetry(
+      () =>
+        flexFetch<{
+          currentUser?: { user?: { userIdHash?: string } };
+        }>(
+          authCtx,
+          `${config.flexBaseUrl}/api/v2/core/users/me/workspace-users-corp-group-affiliates`,
+        ),
+      { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
     );
     const userId = data.currentUser?.user?.userIdHash ?? null;
     if (userId) {

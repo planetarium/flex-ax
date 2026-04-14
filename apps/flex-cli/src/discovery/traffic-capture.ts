@@ -31,12 +31,14 @@ function isApiUrl(url: string): boolean {
 }
 
 /**
- * pathname의 ID-like 세그먼트를 {id}로 치환해 중복 제거 키를 만든다.
- * - 긴 영숫자/헥스/대시 문자열(20자 이상)
- * - 순수 숫자 세그먼트
- * - 숫자 범위 표현(예: `1767193200000..1798729200000`)
+ * pathname의 ID-like 세그먼트를 placeholder로 치환한다.
+ * - 긴 영숫자/헥스/대시 문자열(20자 이상) → {id}
+ * - 순수 숫자 세그먼트 → {id}
+ * - 숫자 범위 표현(예: `1767193200000..1798729200000`) → {range}
+ *
+ * discover 시 중복 제거 키와 catalog의 urlPattern 생성에 공용으로 쓰인다.
  */
-function normalizePathForDedup(pathname: string): string {
+export function normalizeUrlPath(pathname: string): string {
   return pathname
     .split("/")
     .map((seg) => {
@@ -96,7 +98,7 @@ export function createTrafficCapture(page: Page): TrafficCapture {
         const method = response.request().method();
         // 중복 방지: 같은 method + URL 패턴(ID 세그먼트 일반화)은 한 번만 캡처
         const urlPath = new URL(url).pathname;
-        const patternKey = `${method}:${normalizePathForDedup(urlPath)}`;
+        const patternKey = `${method}:${normalizeUrlPath(urlPath)}`;
         if (seenPatterns.has(patternKey)) return;
         seenPatterns.add(patternKey);
 

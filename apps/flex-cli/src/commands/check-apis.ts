@@ -2,13 +2,26 @@ import { loadConfig } from "../config/index.js";
 import { createLogger } from "../logger/index.js";
 import { authenticate, cleanup } from "../auth/index.js";
 
+// 실제 time-off-uses 조회 URL에는 userId와 from..to 범위가 필요하다.
+// check-apis는 라이트하게 엔드포인트 존재 여부만 확인하므로,
+// userId 자리에 "me"를 쓰면 route 매칭에 실패한다. attendance 크롤러에서
+// 사용자 ID를 먼저 조회한 뒤 실제 URL 형식을 그대로 사용한다.
+const ME_USER_ID_LOOKUP_PATH =
+  "/api/v2/core/users/me/workspace-users-corp-group-affiliates";
+
 const APIS_TO_CHECK = [
   { label: "template-list", method: "GET", path: "/api/v3/approval-document-template/templates" },
   { label: "instance-search", method: "POST", path: "/action/v3/approval-document/user-boxes/search" },
   { label: "core-me", method: "GET", path: "/api/v2/core/me" },
-  // 수정된 근태 API (userId는 core/me에서 가져와야 하므로 여기선 me로 테스트)
+  { label: "user-me-workspace (for user id lookup)", method: "GET", path: ME_USER_ID_LOOKUP_PATH },
   { label: "time-off-uses (old: 404)", method: "GET", path: "/api/v2/time-off/users/me/time-off-requests" },
-  { label: "time-off-uses (new)", method: "GET", path: "/api/v2/time-off/users/me/time-off-uses" },
+  // 실제 사용되는 엔드포인트 형태. userId는 런타임에 주입되고 range는 타임스탬프 범위.
+  // 여기서는 placeholder를 채워 route 매칭 여부만 확인한다.
+  {
+    label: "time-off-uses (new, by-use-date-range)",
+    method: "GET",
+    path: "/api/v2/time-off/users/{userId}/time-off-uses/by-use-date-range/{from}..{to}",
+  },
 ];
 
 export async function runCheckApis(): Promise<void> {
@@ -30,8 +43,33 @@ export async function runCheckApis(): Promise<void> {
     console.log("\n  API 엔드포인트 상태 확인\n");
     console.log("  " + "-".repeat(56));
 
+    // 현재 사용자 ID를 먼저 조회 (time-off-uses 실 URL 구성용)
+    let userId = "";
+    try {
+      const lookup = await authCtx.page.evaluate(
+        async ([fetchUrl, headers]) => {
+          const res = await fetch(fetchUrl, { headers: headers as Record<string, string> });
+          if (!res.ok) return null;
+          return await res.json();
+        },
+        [`${config.flexBaseUrl}${ME_USER_ID_LOOKUP_PATH}`, authCtx.authHeaders] as const,
+      );
+      userId = (lookup as { currentUser?: { user?: { userIdHash?: string } } } | null)
+        ?.currentUser?.user?.userIdHash ?? "";
+    } catch {
+      // 사용자 조회 실패 시 placeholder 상태로 계속 진행
+    }
+
+    const now = Date.now();
+    const oneYearAgo = now - 365 * 24 * 60 * 60 * 1000;
+    const substitute = (path: string): string =>
+      path
+        .replace("{userId}", userId || "me")
+        .replace("{from}", String(oneYearAgo))
+        .replace("{to}", String(now));
+
     for (const api of APIS_TO_CHECK) {
-      const url = `${config.flexBaseUrl}${api.path}`;
+      const url = `${config.flexBaseUrl}${substitute(api.path)}`;
 
       try {
         const result = await authCtx.page.evaluate(
