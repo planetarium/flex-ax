@@ -54,7 +54,7 @@ function setupHeaderCapture(
       const reqHostname = new URL(url).hostname;
       if (reqHostname === baseHostname && (url.includes("/api/") || url.includes("/action/"))) {
         const headers = request.headers();
-        for (const key of ["authorization", "cookie", "x-csrf-token"]) {
+        for (const key of ["authorization", "cookie", "x-csrf-token", "x-flex-aid", "x-flex-axios"]) {
           if (headers[key]) {
             authHeaders[key] = headers[key];
           }
@@ -238,6 +238,127 @@ async function authenticatePlaywriter(
 
   console.log("[FLEX-AX:AUTH] Playwriter CDP relay로 로그인 성공");
   return { browser, context, page, authHeaders };
+}
+
+export interface Corporation {
+  customerIdHash: string;
+  userIdHash: string;
+  name: string;
+  isRepresentative: boolean;
+  displayOrder: number;
+}
+
+interface AffiliatesResponse {
+  currentUser?: {
+    customer: { customerIdHash: string; name: string; isRepresentative: boolean; displayOrder: number };
+    user: { userIdHash: string };
+  };
+  users: Array<{
+    customer: { customerIdHash: string; name: string; isRepresentative: boolean; displayOrder: number };
+    user: { userIdHash: string };
+  }>;
+}
+
+/**
+ * 현재 로그인한 사용자가 속한 법인(회사) 목록을 조회한다.
+ * `users` 배열에 (회사 × 유저) 페어가 들어있고, 회사마다 userIdHash가 다르다.
+ */
+export async function listCorporations(authCtx: AuthContext, baseUrl: string): Promise<Corporation[]> {
+  const url = `${baseUrl}/api/v2/core/users/me/workspace-users-corp-group-affiliates`;
+  const data = await authCtx.page.evaluate(
+    async ([fetchUrl, headers]) => {
+      const res = await fetch(fetchUrl, { headers: headers as Record<string, string> });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${fetchUrl}`);
+      return (await res.json()) as AffiliatesResponse;
+    },
+    [url, authCtx.authHeaders] as const,
+  );
+
+  const fromUsers = data.users.map((u) => ({
+    customerIdHash: u.customer.customerIdHash,
+    userIdHash: u.user.userIdHash,
+    name: u.customer.name,
+    isRepresentative: u.customer.isRepresentative,
+    displayOrder: u.customer.displayOrder,
+  }));
+
+  if (fromUsers.length > 0) return fromUsers;
+
+  // fallback: currentUser만 있는 경우
+  if (data.currentUser) {
+    return [
+      {
+        customerIdHash: data.currentUser.customer.customerIdHash,
+        userIdHash: data.currentUser.user.userIdHash,
+        name: data.currentUser.customer.name,
+        isRepresentative: data.currentUser.customer.isRepresentative,
+        displayOrder: data.currentUser.customer.displayOrder,
+      },
+    ];
+  }
+
+  return [];
+}
+
+/**
+ * 지정된 법인 컨텍스트용 JWT를 발급받아 authHeaders에 주입한다.
+ * 이후 모든 flex API 호출은 해당 법인 스코프로 동작한다.
+ *
+ * 인증 방식: 워크스페이스 레벨 JWT(V2_WS_AID 쿠키)를 `flexteam-v2-workspace-access`
+ * 헤더로 전달하면, 서버가 해당 법인 스코프의 고객 JWT를 반환한다.
+ */
+export async function switchCustomer(
+  authCtx: AuthContext,
+  baseUrl: string,
+  customerUuid: string,
+  userUuid: string,
+): Promise<void> {
+  const url = `${baseUrl}/api-public/v2/auth/tokens/customer-user/exchange`;
+  const wsAid = extractCookieValue(authCtx.authHeaders["cookie"] ?? "", "V2_WS_AID");
+  if (!wsAid) {
+    throw new Error(
+      "V2_WS_AID 쿠키를 찾을 수 없습니다. 워크스페이스 인증이 만료되었거나 쿠키가 누락되었습니다.",
+    );
+  }
+
+  const exchangeHeaders: Record<string, string> = {
+    cookie: authCtx.authHeaders["cookie"] ?? "",
+    "content-type": "application/json",
+    "flexteam-v2-workspace-access": wsAid,
+    "x-flex-axios": "base",
+  };
+
+  const result = await authCtx.page.evaluate(
+    async ([fetchUrl, headers, bodyStr]) => {
+      const res = await fetch(fetchUrl, {
+        method: "POST",
+        headers: headers as Record<string, string>,
+        body: bodyStr as string,
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(`HTTP ${res.status}: ${fetchUrl} — ${body.slice(0, 200)}`);
+      }
+      return (await res.json()) as { token: string };
+    },
+    [url, exchangeHeaders, JSON.stringify({ customerUuid, userUuid })] as const,
+  );
+
+  if (!result?.token) {
+    throw new Error(`회사 전환 토큰 발급 실패: customerUuid=${customerUuid}`);
+  }
+
+  authCtx.authHeaders["x-flex-aid"] = result.token;
+}
+
+function extractCookieValue(cookieStr: string, name: string): string | null {
+  for (const pair of cookieStr.split(";")) {
+    const trimmed = pair.trim();
+    if (trimmed.startsWith(`${name}=`)) {
+      return trimmed.slice(name.length + 1);
+    }
+  }
+  return null;
 }
 
 export async function cleanup(authCtx: AuthContext): Promise<void> {
