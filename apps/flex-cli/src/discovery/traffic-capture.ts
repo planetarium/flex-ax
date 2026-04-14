@@ -17,7 +17,8 @@ export interface CapturedRequest {
 const SKIP_PATTERNS = [
   /\.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|map)(\?|$)/i,
   /analytics/i,
-  /tracking/i,
+  // `/time-tracking/...` 같은 비즈니스 API와 충돌하지 않도록 좁힌다 (예: /pixel-tracking/, /event-tracking/)
+  /\/(pixel|event|user|click|conversion)-?tracking(\/|\?|$)/i,
   /sentry/i,
   /hotjar/i,
   /gtag/i,

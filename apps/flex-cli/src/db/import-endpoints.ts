@@ -296,7 +296,7 @@ function importEmployeeHR(
       if (personal) {
         upsertUser(personal.userIdHash, personal.name ?? personal.displayName ?? "");
         ensureCustomer(personal.customerIdHash);
-        // 스키마 주석: 앞 6자리(YYMMDD) + 마스킹. 하이픈/성별자리는 저장하지 않는다.
+        // 앞 6자리(YYMMDD) + 하이픈 + 성별/지역 7자리 마스킹. 실제 성별자리 값은 저장하지 않는다.
         const ssnMasked = personal.ssn ? personal.ssn.slice(0, 6) + "-*******" : null;
         stmts.userPersonal.run(
           personal.userIdHash, personal.customerIdHash,

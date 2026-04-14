@@ -115,7 +115,9 @@ const ENDPOINT_PATTERNS: Array<{ id: string; method: string; pattern: RegExp }> 
   { id: "onboarding", method: "GET", pattern: /\/api\/v\d+\/onboarding\// },
   { id: "yearend-widget", method: "GET", pattern: /\/api\/v\d+\/yearend\/settlements\/[^/]+\/user-widget$/ },
   { id: "background-tasks", method: "GET", pattern: /\/api\/v\d+\/background-task\/tasks$/ },
-  { id: "meeting-options", method: "GET", pattern: /\/api\/v\d+\/meeting\/\.options$/ },
+  // 실제 디스커버리에서 캡처된 URL은 `/api/v2/meeting/.options` (슬래시+점)이지만,
+  // 다른 도메인의 `xxx.options` 형태도 함께 안전하게 매칭한다.
+  { id: "meeting-options", method: "GET", pattern: /\/api\/v\d+\/meeting(?:\/|)\.options$/ },
   { id: "growth-surveys", method: "GET", pattern: /\/api\/v\d+\/growth\/registration-surveys$/ },
   { id: "file-restrictions", method: "GET", pattern: /\/api\/v\d+\/file\/restrictions\/source-types$/ },
   { id: "terms-agreements", method: "GET", pattern: /\/api\/v\d+\/terms\/users\/agreements\.options$/ },
