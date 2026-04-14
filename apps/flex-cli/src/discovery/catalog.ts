@@ -69,9 +69,11 @@ const ENDPOINT_PATTERNS: Array<{ id: string; method: string; pattern: RegExp }> 
   { id: "calendar-recurrence-events", method: "POST", pattern: /\/api\/v\d+\/calendar\/calendars\/recurrence-events$/ },
 
   // --- 공휴일 (holiday) ---
-  { id: "holiday-groups", method: "GET", pattern: /\/api\/v\d+\/holiday\/customers\/[^/]+\/customer-holiday-groups/ },
+  // 더 구체적인 sub-resource 패턴을 holiday-groups 보다 위에 두어 우선 매칭되게 한다
   { id: "public-holidays", method: "GET", pattern: /\/api\/v\d+\/holiday\/customers\/[^/]+\/customer-holiday-groups\/[^/]+\/public-holidays$/ },
   { id: "customer-holidays", method: "GET", pattern: /\/api\/v\d+\/holiday\/customers\/[^/]+\/customer-holiday-groups\/[^/]+\/customer-holidays$/ },
+  // holiday-groups: 정확히 .../customer-holiday-groups 또는 .../customer-holiday-groups/{id}만 매칭
+  { id: "holiday-groups", method: "GET", pattern: /\/api\/v\d+\/holiday\/customers\/[^/]+\/customer-holiday-groups(?:\/[^/]+)?$/ },
   { id: "convert-to-lunar", method: "POST", pattern: /\/action\/v\d+\/holiday\/date\/[^/]+\/convert-to-lunar$/ },
 
   // --- 검색 (search) ---

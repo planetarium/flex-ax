@@ -304,6 +304,8 @@ function importEmployeeHR(
       for (const item of contractsFile.data) {
         const emp = item.employment;
         if (!emp) continue;
+        // FK 무결성을 위해 user_id를 users 테이블에 등록 (실명은 다른 엔드포인트가 채움)
+        upsertUser(emp.userIdHash, "");
         stmts.employmentContract.run(
           emp.idHash, emp.userIdHash, emp.customerIdHash,
           emp.status, emp.type?.value ?? null, emp.beginDate ?? null,
@@ -318,6 +320,9 @@ function importEmployeeHR(
     const salaryFile = readEndpoint(dir, "user-salary-contracts.json");
     if (Array.isArray(salaryFile?.data)) {
       for (const s of salaryFile.data) {
+        // user_id, modified_by 모두 users(id) FK이므로 placeholder로 등록
+        upsertUser(s.userIdHash, "");
+        if (s.modifyUserIdHash) upsertUser(s.modifyUserIdHash, "");
         stmts.salaryContract.run(
           s.idHash, s.userIdHash, s.customerIdHash,
           s.status, s.incomeType?.value ?? null, s.paymentMethod?.value ?? null,
@@ -630,6 +635,8 @@ function importWorkTimeOff(
     const autoWorkPlan = wpaFile?.data?.autoWorkPlan ?? {};
     const wpaUserId = wpaFile?.url?.match(/\/users\/([^/]+)\//)?.[1] ?? null;
     if (wpaUserId) {
+      // FK 무결성을 위해 user_id를 users 테이블에 등록
+      upsertUser(wpaUserId, "");
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       for (const dayPlan of Object.values(autoWorkPlan) as any[]) {
         if (!dayPlan?.dayOfWeek) continue;
