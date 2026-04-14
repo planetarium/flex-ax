@@ -67,7 +67,16 @@ function importCompanyOrg(
     jobRole: db.prepare(`INSERT OR REPLACE INTO job_roles (id, customer_id, name, display_order, active) VALUES (?,?,?,?,?)`),
     jobRank: db.prepare(`INSERT OR REPLACE INTO job_ranks (id, customer_id, name, display_order, active) VALUES (?,?,?,?,?)`),
     disciplineType: db.prepare(`INSERT OR REPLACE INTO discipline_types (id, customer_id, type, name) VALUES (?,?,?,?)`),
+    customerPlaceholder: db.prepare(`INSERT OR IGNORE INTO customers (id, name) VALUES (?, ?)`),
   };
+
+  /** customers FK를 참조하는 자식 INSERT 전에 placeholder customer를 보장한다 */
+  const seenCustomers = new Set<string>();
+  function ensureCustomer(customerId: string | null | undefined): void {
+    if (!customerId || seenCustomers.has(customerId)) return;
+    seenCustomers.add(customerId);
+    stmts.customerPlaceholder.run(customerId, customerId);
+  }
 
   db.transaction(() => {
     // customers
@@ -88,6 +97,7 @@ function importCompanyOrg(
         legal.jurisdictionNationalityCode ?? null, 0, JSON.stringify(d),
       );
       inc("customers");
+      seenCustomers.add(d.customerIdHash as string);
       for (const pid of (d.companyPresidentUserIdHashes ?? []) as string[]) {
         // 이름이 없으므로 placeholder로 등록 (이후 다른 엔드포인트에서 실제 이름이 들어오면 갱신됨)
         upsertUser(pid, "");
@@ -97,6 +107,7 @@ function importCompanyOrg(
     // departments
     const df = readEndpoint(dir, "departments-search.json");
     for (const row of df?.data ?? []) {
+      ensureCustomer(row.customerIdHash);
       stmts.department.run(
         row.idHash, row.customerIdHash, row.parentDepartmentIdHash ?? null,
         row.name, row.visible ? 1 : 0, row.displayOrder ?? null,
@@ -109,6 +120,7 @@ function importCompanyOrg(
     // job_titles
     const jtf = readEndpoint(dir, "customer-job-titles.json");
     for (const row of jtf?.data ?? []) {
+      ensureCustomer(row.customerIdHash);
       stmts.jobTitle.run(
         row.idHash, row.customerIdHash, row.name, row.displayOrder ?? null, row.active ? 1 : 0,
       );
@@ -118,6 +130,7 @@ function importCompanyOrg(
     // job_roles
     const jrf = readEndpoint(dir, "customer-job-roles.json");
     for (const row of jrf?.data ?? []) {
+      ensureCustomer(row.customerIdHash);
       stmts.jobRole.run(
         row.idHash, row.customerIdHash, row.name, row.displayOrder ?? null, row.active ? 1 : 0,
       );
@@ -127,6 +140,7 @@ function importCompanyOrg(
     // job_ranks
     const jrkf = readEndpoint(dir, "customer-job-ranks.json");
     for (const row of jrkf?.data ?? []) {
+      ensureCustomer(row.customerIdHash);
       stmts.jobRank.run(
         row.idHash, row.customerIdHash, row.name, row.displayOrder ?? null, row.active ? 1 : 0,
       );
@@ -144,6 +158,7 @@ function importCompanyOrg(
         );
         continue;
       }
+      ensureCustomer(disciplineCustomerId);
       stmts.disciplineType.run(
         row.disciplineIdHash, disciplineCustomerId, row.type, row.name,
       );
@@ -398,6 +413,8 @@ function importPersonnelProfile(
           ) {
             continue;
           }
+          // creator_id가 users(id) FK이므로 placeholder로 등록
+          if (pa.creatorIdHash) upsertUser(pa.creatorIdHash, "");
           const label = pa.personnelAppointmentLabel ?? {};
           stmts.pa.run(
             id, pa.customerIdHash, pa.creatorIdHash ?? null,

@@ -177,8 +177,7 @@ CREATE INDEX IF NOT EXISTS idx_attendance_type   ON attendance(type, date_from);
 
 -- ============================================================
 -- 회사 (고객사) 정보
--- 엔드포인트: customer-info, user-me-workspace, workspace-users,
---            workspace-users-me, workspace-corporate-group
+-- 채움 소스: customer-info (실데이터), 자식 테이블 INSERT 시 placeholder
 -- ============================================================
 CREATE TABLE IF NOT EXISTS customers (
   id                    TEXT PRIMARY KEY,        -- customerIdHash
