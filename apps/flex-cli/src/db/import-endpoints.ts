@@ -23,11 +23,20 @@ export function importEndpoints(
   const counts: Record<string, number> = {};
   function inc(key: string, n = 1) { counts[key] = (counts[key] ?? 0) + n; }
 
-  importCompanyOrg(db, endpointsDir, upsertUser, logger, inc);
-  importEmployeeHR(db, endpointsDir, upsertUser, logger, inc);
-  importPersonnelProfile(db, endpointsDir, upsertUser, logger, inc);
-  importWorkTimeOff(db, endpointsDir, upsertUser, logger, inc);
-  importOther(db, endpointsDir, upsertUser, logger, inc);
+  // customers FK placeholder 보장 헬퍼 (모든 sub-importer에서 공유)
+  const customerPlaceholder = db.prepare(`INSERT OR IGNORE INTO customers (id, name) VALUES (?, ?)`);
+  const seenCustomers = new Set<string>();
+  function ensureCustomer(customerId: string | null | undefined): void {
+    if (!customerId || seenCustomers.has(customerId)) return;
+    seenCustomers.add(customerId);
+    customerPlaceholder.run(customerId, customerId);
+  }
+
+  importCompanyOrg(db, endpointsDir, upsertUser, ensureCustomer, logger, inc);
+  importEmployeeHR(db, endpointsDir, upsertUser, ensureCustomer, logger, inc);
+  importPersonnelProfile(db, endpointsDir, upsertUser, ensureCustomer, logger, inc);
+  importWorkTimeOff(db, endpointsDir, upsertUser, ensureCustomer, logger, inc);
+  importOther(db, endpointsDir, upsertUser, ensureCustomer, logger, inc);
 
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   logger.info(`엔드포인트 임포트 완료: 총 ${total}건`);
@@ -39,6 +48,7 @@ export function importEndpoints(
 }
 
 type Inc = (key: string, n?: number) => void;
+type EnsureCustomer = (customerId: string | null | undefined) => void;
 
 // ============================================================
 // Company / Org
@@ -46,6 +56,7 @@ type Inc = (key: string, n?: number) => void;
 function importCompanyOrg(
   db: Database.Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
+  ensureCustomer: EnsureCustomer,
   logger: Logger, inc: Inc,
 ) {
   // Prepared statements (루프 밖에서 한 번만 prepare)
@@ -67,16 +78,7 @@ function importCompanyOrg(
     jobRole: db.prepare(`INSERT OR REPLACE INTO job_roles (id, customer_id, name, display_order, active) VALUES (?,?,?,?,?)`),
     jobRank: db.prepare(`INSERT OR REPLACE INTO job_ranks (id, customer_id, name, display_order, active) VALUES (?,?,?,?,?)`),
     disciplineType: db.prepare(`INSERT OR REPLACE INTO discipline_types (id, customer_id, type, name) VALUES (?,?,?,?)`),
-    customerPlaceholder: db.prepare(`INSERT OR IGNORE INTO customers (id, name) VALUES (?, ?)`),
   };
-
-  /** customers FK를 참조하는 자식 INSERT 전에 placeholder customer를 보장한다 */
-  const seenCustomers = new Set<string>();
-  function ensureCustomer(customerId: string | null | undefined): void {
-    if (!customerId || seenCustomers.has(customerId)) return;
-    seenCustomers.add(customerId);
-    stmts.customerPlaceholder.run(customerId, customerId);
-  }
 
   db.transaction(() => {
     // customers
@@ -97,7 +99,8 @@ function importCompanyOrg(
         legal.jurisdictionNationalityCode ?? null, 0, JSON.stringify(d),
       );
       inc("customers");
-      seenCustomers.add(d.customerIdHash as string);
+      // 실데이터 customers row가 이미 들어갔으므로 placeholder가 다시 시도되지 않도록 등록
+      ensureCustomer(d.customerIdHash as string);
       for (const pid of (d.companyPresidentUserIdHashes ?? []) as string[]) {
         // 이름이 없으므로 placeholder로 등록 (이후 다른 엔드포인트에서 실제 이름이 들어오면 갱신됨)
         upsertUser(pid, "");
@@ -173,6 +176,7 @@ function importCompanyOrg(
 function importEmployeeHR(
   db: Database.Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
+  ensureCustomer: EnsureCustomer,
   _logger: Logger, inc: Inc,
 ) {
   const stmts = {
@@ -230,6 +234,7 @@ function importEmployeeHR(
     if (empFile?.data) {
       const e = empFile.data;
       upsertUser(e.userIdHash, e.name ?? "");
+      ensureCustomer(e.customerIdHash);
       stmts.employee.run(
         e.userIdHash, e.customerIdHash, e.employeeNumber ?? null,
         e.companyJoinDate ?? null, e.companyGroupJoinDate ?? null,
@@ -245,6 +250,7 @@ function importEmployeeHR(
       const { employee, positions = [], jobRoles = [], jobRanks = [] } = bundleFile.data;
       if (employee) {
         upsertUser(employee.userIdHash, employee.name ?? "");
+        ensureCustomer(employee.customerIdHash);
         stmts.employee.run(
           employee.userIdHash, employee.customerIdHash, employee.employeeNumber ?? null,
           employee.companyJoinDate ?? null, employee.companyGroupJoinDate ?? null,
@@ -254,6 +260,7 @@ function importEmployeeHR(
         inc("employees");
       }
       for (const p of positions) {
+        ensureCustomer(p.customerIdHash);
         stmts.userPosition.run(
           p.idHash, p.userIdHash, p.customerIdHash,
           p.departmentIdHash ?? null, p.jobTitleIdHash ?? null,
@@ -263,6 +270,7 @@ function importEmployeeHR(
         inc("user_positions");
       }
       for (const r of jobRoles) {
+        ensureCustomer(r.customerIdHash);
         stmts.userJobRole.run(
           r.idHash, r.userIdHash, r.customerIdHash,
           r.jobRoleIdHash ?? null, r.isPrimary ? 1 : 0,
@@ -271,6 +279,7 @@ function importEmployeeHR(
         inc("user_job_roles");
       }
       for (const rank of jobRanks) {
+        ensureCustomer(rank.customerIdHash);
         stmts.userJobRank.run(
           rank.idHash, rank.userIdHash, rank.customerIdHash,
           rank.jobRankIdHash ?? null, rank.isPrimary ? 1 : 0,
@@ -286,6 +295,7 @@ function importEmployeeHR(
       const { personal, payrollBankAccount } = personalFile.data;
       if (personal) {
         upsertUser(personal.userIdHash, personal.name ?? personal.displayName ?? "");
+        ensureCustomer(personal.customerIdHash);
         // 스키마 주석: 앞 6자리(YYMMDD) + 마스킹. 하이픈/성별자리는 저장하지 않는다.
         const ssnMasked = personal.ssn ? personal.ssn.slice(0, 6) + "-*******" : null;
         stmts.userPersonal.run(
@@ -303,6 +313,7 @@ function importEmployeeHR(
         inc("user_personals");
       }
       if (payrollBankAccount) {
+        ensureCustomer(payrollBankAccount.customerIdHash);
         stmts.payrollBankAccount.run(
           payrollBankAccount.idHash, payrollBankAccount.userIdHash,
           payrollBankAccount.customerIdHash, payrollBankAccount.type ?? "PAYROLL",
@@ -321,6 +332,7 @@ function importEmployeeHR(
         if (!emp) continue;
         // FK 무결성을 위해 user_id를 users 테이블에 등록 (실명은 다른 엔드포인트가 채움)
         upsertUser(emp.userIdHash, "");
+        ensureCustomer(emp.customerIdHash);
         stmts.employmentContract.run(
           emp.idHash, emp.userIdHash, emp.customerIdHash,
           emp.status, emp.type?.value ?? null, emp.beginDate ?? null,
@@ -338,6 +350,7 @@ function importEmployeeHR(
         // user_id, modified_by 모두 users(id) FK이므로 placeholder로 등록
         upsertUser(s.userIdHash, "");
         if (s.modifyUserIdHash) upsertUser(s.modifyUserIdHash, "");
+        ensureCustomer(s.customerIdHash);
         stmts.salaryContract.run(
           s.idHash, s.userIdHash, s.customerIdHash,
           s.status, s.incomeType?.value ?? null, s.paymentMethod?.value ?? null,
@@ -359,6 +372,7 @@ function importEmployeeHR(
 function importPersonnelProfile(
   db: Database.Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
+  ensureCustomer: EnsureCustomer,
   logger: Logger, inc: Inc,
 ) {
   /** NOT NULL 필드가 누락되면 경고 후 스킵하는 헬퍼 */
@@ -415,6 +429,7 @@ function importPersonnelProfile(
           }
           // creator_id가 users(id) FK이므로 placeholder로 등록
           if (pa.creatorIdHash) upsertUser(pa.creatorIdHash, "");
+          ensureCustomer(pa.customerIdHash);
           const label = pa.personnelAppointmentLabel ?? {};
           stmts.pa.run(
             id, pa.customerIdHash, pa.creatorIdHash ?? null,
@@ -443,6 +458,7 @@ function importPersonnelProfile(
           customer_id: r.customerIdHash,
         })
       ) continue;
+      ensureCustomer(r.customerIdHash);
       stmts.resignation.run(id, r.userIdHash, r.customerIdHash, r.resignationDate ?? null, r.type ?? null, r.reason ?? null, r.status ?? null, JSON.stringify(r));
       inc("user_resignations");
     }
@@ -456,6 +472,7 @@ function importPersonnelProfile(
           customer_id: l.customerIdHash,
         })
       ) continue;
+      ensureCustomer(l.customerIdHash);
       stmts.loa.run(id, l.userIdHash, l.customerIdHash, l.type ?? null, l.beginDate ?? null, l.endDate ?? null, l.status ?? null, l.reason ?? null, JSON.stringify(l));
       inc("leave_of_absences");
     }
@@ -469,6 +486,7 @@ function importPersonnelProfile(
           customer_id: d.customerIdHash,
         })
       ) continue;
+      ensureCustomer(d.customerIdHash);
       stmts.depFamily.run(id, d.userIdHash, d.customerIdHash, d.name ?? null, d.relation ?? null, d.birthDate ?? null, JSON.stringify(d));
       inc("dependent_families");
     }
@@ -477,6 +495,7 @@ function importPersonnelProfile(
     for (const w of readEndpoint(dir, "work-experiences-search.json")?.data?.workExperienceResponses ?? []) {
       const id = w.idHash ?? w.id;
       if (!requireFields("work_experiences", id, { user_id: w.userIdHash, customer_id: w.customerIdHash })) continue;
+      ensureCustomer(w.customerIdHash);
       stmts.workExp.run(id, w.userIdHash, w.customerIdHash, w.companyName ?? null, w.department ?? null, w.position ?? null, w.beginDate ?? null, w.endDate ?? null, w.description ?? null, JSON.stringify(w));
       inc("work_experiences");
     }
@@ -485,6 +504,7 @@ function importPersonnelProfile(
     for (const e of readEndpoint(dir, "education-experiences-search.json")?.data?.educationExperienceResponses ?? []) {
       const id = e.idHash ?? e.id;
       if (!requireFields("education_experiences", id, { user_id: e.userIdHash, customer_id: e.customerIdHash })) continue;
+      ensureCustomer(e.customerIdHash);
       stmts.eduExp.run(id, e.userIdHash, e.customerIdHash, e.schoolName ?? null, e.major ?? null, e.degree ?? null, e.beginDate ?? null, e.endDate ?? null, JSON.stringify(e));
       inc("education_experiences");
     }
@@ -493,6 +513,7 @@ function importPersonnelProfile(
     for (const r of readEndpoint(dir, "user-rewards-search.json")?.data?.list ?? []) {
       const id = r.idHash ?? r.id;
       if (!requireFields("user_rewards", id, { user_id: r.userIdHash, customer_id: r.customerIdHash })) continue;
+      ensureCustomer(r.customerIdHash);
       stmts.reward.run(id, r.userIdHash, r.customerIdHash, r.name ?? null, r.date ?? null, r.description ?? null, JSON.stringify(r));
       inc("user_rewards");
     }
@@ -501,6 +522,7 @@ function importPersonnelProfile(
     for (const d of readEndpoint(dir, "user-disciplines-search.json")?.data?.list ?? []) {
       const id = d.idHash ?? d.id;
       if (!requireFields("user_disciplines", id, { user_id: d.userIdHash, customer_id: d.customerIdHash })) continue;
+      ensureCustomer(d.customerIdHash);
       stmts.discipline.run(id, d.userIdHash, d.customerIdHash, d.disciplineTypeIdHash ?? null, d.startDate ?? null, d.endDate ?? null, d.reason ?? null, d.status ?? null, JSON.stringify(d));
       inc("user_disciplines");
     }
@@ -513,6 +535,7 @@ function importPersonnelProfile(
 function importWorkTimeOff(
   db: Database.Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
+  ensureCustomer: EnsureCustomer,
   logger: Logger, inc: Inc,
 ) {
   const stmts = {
@@ -584,6 +607,7 @@ function importWorkTimeOff(
       );
       return;
     }
+    ensureCustomer(customerId);
     seenPolicies.add(policyId);
     const disp = form.displayInfo ?? {};
     const paid = form.paid ?? {};
@@ -608,6 +632,7 @@ function importWorkTimeOff(
     const wrFile = readEndpoint(dir, "work-rules-customer.json");
     for (const r of wrFile?.data?.workRules ?? []) {
       const pr = r.workingPeriodRule ?? {};
+      ensureCustomer(r.customerIdHash);
       stmts.workRule.run(
         String(r.customerWorkRuleId), r.customerIdHash,
         r.ruleName ?? null, r.controlType ?? null, r.workingHourType ?? null,
@@ -627,6 +652,7 @@ function importWorkTimeOff(
     const uwr = uwrFile?.data?.workRule;
     if (uwr) {
       upsertUser(uwr.userIdHash, "");
+      ensureCustomer(uwr.customerIdHash);
       stmts.userWorkRule.run(
         String(uwr.userWorkRuleId), uwr.userIdHash, uwr.customerIdHash,
         String(uwr.customerWorkRuleId), uwr.dateFrom, uwr.dateTo ?? null,
@@ -639,6 +665,7 @@ function importWorkTimeOff(
     const wfFile = readEndpoint(dir, "work-forms.json");
     for (const wf of wfFile?.data?.workForms ?? []) {
       const disp = wf.display ?? {};
+      ensureCustomer(wf.customerIdHash);
       stmts.workForm.run(
         String(wf.customerWorkFormId), wf.customerIdHash,
         disp.name ?? "", disp.description ?? null,
@@ -677,6 +704,7 @@ function importWorkTimeOff(
     const war = warFile?.data?.workApprovalRule;
     if (war) {
       const disp = war.display ?? {};
+      ensureCustomer(war.customerIdHash);
       stmts.workApprovalRule.run(
         String(war.customerWorkApprovalRuleId), war.customerIdHash,
         war.type, disp.name ?? null, disp.displayOrder ?? null,
@@ -760,6 +788,7 @@ function importWorkTimeOff(
     const hgFile = readEndpoint(dir, "holiday-groups.json");
     const hg = hgFile?.data?.customerHolidayGroup;
     if (hg) {
+      ensureCustomer(hg.customerIdHash);
       stmts.holidayGroup.run(hg.customerHolidayGroupIdHash, hg.customerIdHash, hg.name, hg.defaultGroup ? 1 : 0);
       inc("holiday_groups");
     }
@@ -769,6 +798,7 @@ function importWorkTimeOff(
     const mapping = uhgFile?.data?.holidayGroupUserMapping;
     if (mapping) {
       upsertUser(mapping.userIdHash, "");
+      ensureCustomer(mapping.customerIdHash);
       stmts.userHolidayGroup.run(mapping.userIdHash, mapping.customerHolidayGroupIdHash, mapping.customerIdHash);
       inc("user_holiday_groups");
     }
@@ -781,6 +811,7 @@ function importWorkTimeOff(
 function importOther(
   db: Database.Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
+  ensureCustomer: EnsureCustomer,
   _logger: Logger, inc: Inc,
 ) {
   const stmts = {
@@ -804,6 +835,7 @@ function importOther(
       const items: any[] = filename === "calendar-primary.json" ? (raw.data ? [raw.data] : []) : (raw.data?.calendars ?? []);
       for (const cal of items) {
         upsertUser(cal.userIdHash, cal.userDisplayName ?? "");
+        ensureCustomer(cal.customerIdHash);
         stmts.calendar.run(cal.id ?? cal.token, cal.userIdHash, cal.customerIdHash, cal.summary ?? null, cal.timeZone ?? "Asia/Seoul", cal.createdAt ?? null, cal.updatedAt ?? null);
         inc("calendars");
       }
@@ -859,11 +891,16 @@ function importOther(
     }
 
     // customer_attachments
+    // file_key가 files(file_key) FK이므로 다운로드되지 않은 파일도 placeholder로 보장
+    const ensureFilePlaceholder = db.prepare("INSERT OR IGNORE INTO files (file_key) VALUES (?)");
     for (const att of readEndpoint(dir, "customer-attachments-search.json")?.data ?? []) {
+      ensureCustomer(att.customerIdHash);
+      const fileKey = att.fileKey ?? null;
+      if (fileKey) ensureFilePlaceholder.run(fileKey);
       stmts.customerAttachment.run(
         att.idHash, att.customerIdHash, att.type ?? null, att.name ?? null,
         att.description ?? null, att.displayOrder ?? null, att.linkUri || null,
-        att.fileKey ?? null, att.fileName ?? null, att.fileUrl ?? null,
+        fileKey, att.fileName ?? null, att.fileUrl ?? null,
         att.modifiedDate ?? null,
       );
       inc("customer_attachments");
@@ -874,6 +911,7 @@ function importOther(
     if (subRaw?.data) {
       const customerId = subRaw.url?.match(/customers\/([^/]+)\/features/)?.[1] ?? null;
       if (customerId) {
+        ensureCustomer(customerId);
         for (const key of subRaw.data.activatedFeatureKeys ?? []) {
           stmts.subscriptionFeature.run(customerId, key, "ACTIVE");
           inc("subscription_features");
