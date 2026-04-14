@@ -339,8 +339,26 @@ function importEmployeeHR(
 function importPersonnelProfile(
   db: Database.Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
-  _logger: Logger, inc: Inc,
+  logger: Logger, inc: Inc,
 ) {
+  /** NOT NULL 필드가 누락되면 경고 후 스킵하는 헬퍼 */
+  function requireFields(
+    table: string,
+    id: unknown,
+    fields: Record<string, unknown>,
+  ): boolean {
+    const missing = Object.entries(fields)
+      .filter(([, v]) => v === null || v === undefined || v === "")
+      .map(([k]) => k);
+    if (missing.length > 0) {
+      logger.warn(
+        `${table} 스킵: NOT NULL 필드 누락 (${missing.join(", ")}, id=${String(id ?? "")})`,
+      );
+      return false;
+    }
+    return true;
+  }
+
   const stmts = {
     pa: db.prepare(`
       INSERT OR REPLACE INTO personnel_appointments
@@ -367,10 +385,18 @@ function importPersonnelProfile(
         const id = pa.personnelAppointmentIdHash;
         if (!seenPA.has(id)) {
           seenPA.add(id);
+          if (
+            !requireFields("personnel_appointments", id, {
+              customer_id: pa.customerIdHash,
+              status: pa.status,
+            })
+          ) {
+            continue;
+          }
           const label = pa.personnelAppointmentLabel ?? {};
           stmts.pa.run(
-            id, pa.customerIdHash ?? null, pa.creatorIdHash ?? null,
-            pa.creatorType ?? null, pa.status ?? null,
+            id, pa.customerIdHash, pa.creatorIdHash ?? null,
+            pa.creatorType ?? null, pa.status,
             pa.applyDate ? pa.applyDate.slice(0, 10) : null,
             pa.createdDate ?? null, pa.lastModifiedDate ?? null,
             pa.personnelAppointmentLabelIdHash ?? null,
@@ -378,51 +404,82 @@ function importPersonnelProfile(
           );
           inc("personnel_appointments");
         }
-        stmts.paUser.run(id, userId);
-        inc("personnel_appointment_users");
-        upsertUser(userId, "");
+        if (userId) {
+          stmts.paUser.run(id, userId);
+          inc("personnel_appointment_users");
+          upsertUser(userId, "");
+        }
       }
     }
 
     // user_resignations
     for (const r of readEndpoint(dir, "user-resignations.json")?.data ?? []) {
-      stmts.resignation.run(r.idHash ?? r.id, r.userIdHash ?? null, r.customerIdHash ?? null, r.resignationDate ?? null, r.type ?? null, r.reason ?? null, r.status ?? null, JSON.stringify(r));
+      const id = r.idHash ?? r.id;
+      if (
+        !requireFields("user_resignations", id, {
+          user_id: r.userIdHash,
+          customer_id: r.customerIdHash,
+        })
+      ) continue;
+      stmts.resignation.run(id, r.userIdHash, r.customerIdHash, r.resignationDate ?? null, r.type ?? null, r.reason ?? null, r.status ?? null, JSON.stringify(r));
       inc("user_resignations");
     }
 
     // leave_of_absences
     for (const l of readEndpoint(dir, "user-leave-of-absences.json")?.data ?? []) {
-      stmts.loa.run(l.idHash ?? l.id, l.userIdHash ?? null, l.customerIdHash ?? null, l.type ?? null, l.beginDate ?? null, l.endDate ?? null, l.status ?? null, l.reason ?? null, JSON.stringify(l));
+      const id = l.idHash ?? l.id;
+      if (
+        !requireFields("leave_of_absences", id, {
+          user_id: l.userIdHash,
+          customer_id: l.customerIdHash,
+        })
+      ) continue;
+      stmts.loa.run(id, l.userIdHash, l.customerIdHash, l.type ?? null, l.beginDate ?? null, l.endDate ?? null, l.status ?? null, l.reason ?? null, JSON.stringify(l));
       inc("leave_of_absences");
     }
 
     // dependent_families
     for (const d of readEndpoint(dir, "dependent-families-search.json")?.data?.responses ?? []) {
-      stmts.depFamily.run(d.idHash ?? d.id, d.userIdHash ?? null, d.customerIdHash ?? null, d.name ?? null, d.relation ?? null, d.birthDate ?? null, JSON.stringify(d));
+      const id = d.idHash ?? d.id;
+      if (
+        !requireFields("dependent_families", id, {
+          user_id: d.userIdHash,
+          customer_id: d.customerIdHash,
+        })
+      ) continue;
+      stmts.depFamily.run(id, d.userIdHash, d.customerIdHash, d.name ?? null, d.relation ?? null, d.birthDate ?? null, JSON.stringify(d));
       inc("dependent_families");
     }
 
     // work_experiences
     for (const w of readEndpoint(dir, "work-experiences-search.json")?.data?.workExperienceResponses ?? []) {
-      stmts.workExp.run(w.idHash ?? w.id, w.userIdHash ?? null, w.customerIdHash ?? null, w.companyName ?? null, w.department ?? null, w.position ?? null, w.beginDate ?? null, w.endDate ?? null, w.description ?? null, JSON.stringify(w));
+      const id = w.idHash ?? w.id;
+      if (!requireFields("work_experiences", id, { user_id: w.userIdHash, customer_id: w.customerIdHash })) continue;
+      stmts.workExp.run(id, w.userIdHash, w.customerIdHash, w.companyName ?? null, w.department ?? null, w.position ?? null, w.beginDate ?? null, w.endDate ?? null, w.description ?? null, JSON.stringify(w));
       inc("work_experiences");
     }
 
     // education_experiences
     for (const e of readEndpoint(dir, "education-experiences-search.json")?.data?.educationExperienceResponses ?? []) {
-      stmts.eduExp.run(e.idHash ?? e.id, e.userIdHash ?? null, e.customerIdHash ?? null, e.schoolName ?? null, e.major ?? null, e.degree ?? null, e.beginDate ?? null, e.endDate ?? null, JSON.stringify(e));
+      const id = e.idHash ?? e.id;
+      if (!requireFields("education_experiences", id, { user_id: e.userIdHash, customer_id: e.customerIdHash })) continue;
+      stmts.eduExp.run(id, e.userIdHash, e.customerIdHash, e.schoolName ?? null, e.major ?? null, e.degree ?? null, e.beginDate ?? null, e.endDate ?? null, JSON.stringify(e));
       inc("education_experiences");
     }
 
     // user_rewards
     for (const r of readEndpoint(dir, "user-rewards-search.json")?.data?.list ?? []) {
-      stmts.reward.run(r.idHash ?? r.id, r.userIdHash ?? null, r.customerIdHash ?? null, r.name ?? null, r.date ?? null, r.description ?? null, JSON.stringify(r));
+      const id = r.idHash ?? r.id;
+      if (!requireFields("user_rewards", id, { user_id: r.userIdHash, customer_id: r.customerIdHash })) continue;
+      stmts.reward.run(id, r.userIdHash, r.customerIdHash, r.name ?? null, r.date ?? null, r.description ?? null, JSON.stringify(r));
       inc("user_rewards");
     }
 
     // user_disciplines
     for (const d of readEndpoint(dir, "user-disciplines-search.json")?.data?.list ?? []) {
-      stmts.discipline.run(d.idHash ?? d.id, d.userIdHash ?? null, d.customerIdHash ?? null, d.disciplineTypeIdHash ?? null, d.startDate ?? null, d.endDate ?? null, d.reason ?? null, d.status ?? null, JSON.stringify(d));
+      const id = d.idHash ?? d.id;
+      if (!requireFields("user_disciplines", id, { user_id: d.userIdHash, customer_id: d.customerIdHash })) continue;
+      stmts.discipline.run(id, d.userIdHash, d.customerIdHash, d.disciplineTypeIdHash ?? null, d.startDate ?? null, d.endDate ?? null, d.reason ?? null, d.status ?? null, JSON.stringify(d));
       inc("user_disciplines");
     }
   })();
@@ -434,7 +491,7 @@ function importPersonnelProfile(
 function importWorkTimeOff(
   db: Database.Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
-  _logger: Logger, inc: Inc,
+  logger: Logger, inc: Inc,
 ) {
   const stmts = {
     workRule: db.prepare(`
@@ -493,6 +550,12 @@ function importWorkTimeOff(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function insertPolicy(policyId: string, customerId: string | null, form: any) {
     if (seenPolicies.has(policyId)) return;
+    if (!customerId) {
+      logger.warn(
+        `time_off_policies 스킵: customer_id 없음 (policyId=${policyId})`,
+      );
+      return;
+    }
     seenPolicies.add(policyId);
     const disp = form.displayInfo ?? {};
     const paid = form.paid ?? {};
