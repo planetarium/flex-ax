@@ -9,6 +9,8 @@ export interface CapturedRequest {
   requestBody?: unknown;
   statusCode: number;
   responseBody?: unknown;
+  /** 배열 응답의 원본 길이 (truncate 전) */
+  totalItems?: number;
   capturedAt: string;
 }
 
@@ -112,7 +114,7 @@ export function createTrafficCapture(page: Page): TrafficCapture {
             responseBody: truncated,
             ...(totalItems !== undefined ? { totalItems } : {}),
             capturedAt: new Date().toISOString(),
-          } as CapturedRequest & { totalItems?: number });
+          });
         } catch {
           // 캡처 실패는 무시
         }

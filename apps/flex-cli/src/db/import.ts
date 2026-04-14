@@ -36,11 +36,10 @@ export async function importToSqlite(
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = OFF"); // 임포트 순서 무관하게 처리, 완료 후 체크
 
-  // schema.sql + schema_v2.sql 로드
+  // schema.sql 로드
   const schemaPath = path.join(__dirname, "schema.sql");
   const schema = await readFile(schemaPath, "utf-8");
   db.exec(schema);
-
 
   // 사용자 수집용
   const users = new Map<string, { name: string; aliases: Set<string> }>();

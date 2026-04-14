@@ -31,7 +31,8 @@ export async function navigateForDiscovery(
   await page.waitForTimeout(2000);
 
   // 사이드바 메뉴 항목 추출 시도
-  const menuItems = await extractMenuItems(page, logger);
+  const baseHost = new URL(config.flexBaseUrl).hostname;
+  const menuItems = await extractMenuItems(page, logger, baseHost);
 
   if (menuItems.length > 0) {
     logger.info(`사이드바에서 ${menuItems.length}개 메뉴 항목 발견`);
@@ -60,7 +61,7 @@ interface MenuItem {
   label: string;
 }
 
-async function extractMenuItems(page: Page, logger: Logger): Promise<MenuItem[]> {
+async function extractMenuItems(page: Page, logger: Logger, baseHost: string): Promise<MenuItem[]> {
   try {
     // flex.team의 사이드바 메뉴 링크를 추출
     // 여러 셀렉터를 시도하여 호환성 확보
@@ -92,8 +93,14 @@ async function extractMenuItems(page: Page, logger: Logger): Promise<MenuItem[]>
 
       if (items.length > 0) {
         logger.info(`셀렉터 '${selector}'로 ${items.length}개 메뉴 발견`);
-        // flex.team 내부 링크만 필터
-        return items.filter((item) => item.url.includes("flex.team"));
+        // baseHost 내부 링크만 필터 (커스텀/스테이징 도메인 지원)
+        return items.filter((item) => {
+          try {
+            return new URL(item.url).hostname === baseHost;
+          } catch {
+            return false;
+          }
+        });
       }
     }
   } catch (error) {

@@ -126,8 +126,15 @@ function importCompanyOrg(
     const dtf = readEndpoint(dir, "customer-disciplines.json");
     const custId = f?.data?.customerIdHash ?? null;
     for (const row of dtf?.data ?? []) {
+      const disciplineCustomerId = row.customerIdHash ?? custId;
+      if (!disciplineCustomerId) {
+        logger.warn(
+          `discipline_types 스킵: customer_id 없음 (disciplineIdHash=${String(row.disciplineIdHash ?? "")})`,
+        );
+        continue;
+      }
       db.prepare(`INSERT OR REPLACE INTO discipline_types (id, customer_id, type, name) VALUES (?,?,?,?)`).run(
-        row.disciplineIdHash, custId, row.type, row.name,
+        row.disciplineIdHash, disciplineCustomerId, row.type, row.name,
       );
       inc("discipline_types");
     }

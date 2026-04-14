@@ -195,7 +195,7 @@ export function buildCatalog(
       requestBodySample: capture.requestBody,
       statusCode: capture.statusCode,
       responseBodySample: capture.responseBody,
-      totalItems: (capture as CapturedRequest & { totalItems?: number }).totalItems,
+      totalItems: capture.totalItems,
       capturedAt: capture.capturedAt,
     };
 
