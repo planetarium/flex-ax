@@ -97,6 +97,11 @@ export function createTrafficCapture(page: Page): TrafficCapture {
 
   return {
     start() {
+      // idempotent: 이미 등록된 handler가 있으면 먼저 제거하여 중복 캡처/리스너 누수를 방지한다
+      if (handler) {
+        page.removeListener("response", handler);
+        handler = null;
+      }
       handler = async (response: Response) => {
         const url = response.url();
         if (!isApiUrl(url)) return;

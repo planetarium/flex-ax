@@ -561,6 +561,12 @@ function importWorkTimeOff(
       );
       return;
     }
+    if (!form.timeOffPolicyType) {
+      logger.warn(
+        `time_off_policies 스킵: type 없음 (policyId=${policyId})`,
+      );
+      return;
+    }
     seenPolicies.add(policyId);
     const disp = form.displayInfo ?? {};
     const paid = form.paid ?? {};
