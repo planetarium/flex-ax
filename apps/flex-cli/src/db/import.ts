@@ -52,9 +52,9 @@ export async function importToSqlite(
    * - 같은 id가 placeholder로 먼저 저장된 후 실제 이름이 들어오면 이름을 갱신
    * - 같은 id에 여러 실제 이름이 들어오면 aliases에 축적
    */
-  function upsertUser(id: string | undefined, name: string): void {
+  function upsertUser(id: string | undefined, name: string | undefined | null): void {
     if (!id) return;
-    const trimmed = name.trim();
+    const trimmed = (name ?? "").trim();
     const isRealName =
       trimmed.length > 0 && trimmed !== "unknown" && trimmed !== PLACEHOLDER_NAME;
     const effectiveName = isRealName ? trimmed : PLACEHOLDER_NAME;

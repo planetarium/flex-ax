@@ -17,7 +17,7 @@ function readEndpoint(endpointsDir: string, filename: string): any | null {
 export function importEndpoints(
   db: Database.Database,
   endpointsDir: string,
-  upsertUser: (id: string | undefined, name: string) => void,
+  upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   logger: Logger,
 ): Record<string, number> {
   const counts: Record<string, number> = {};
@@ -45,7 +45,7 @@ type Inc = (key: string, n?: number) => void;
 // ============================================================
 function importCompanyOrg(
   db: Database.Database, dir: string,
-  upsertUser: (id: string | undefined, name: string) => void,
+  upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   logger: Logger, inc: Inc,
 ) {
   // Prepared statements (루프 밖에서 한 번만 prepare)
@@ -157,7 +157,7 @@ function importCompanyOrg(
 // ============================================================
 function importEmployeeHR(
   db: Database.Database, dir: string,
-  upsertUser: (id: string | undefined, name: string) => void,
+  upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   _logger: Logger, inc: Inc,
 ) {
   const stmts = {
@@ -338,7 +338,7 @@ function importEmployeeHR(
 // ============================================================
 function importPersonnelProfile(
   db: Database.Database, dir: string,
-  upsertUser: (id: string | undefined, name: string) => void,
+  upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   _logger: Logger, inc: Inc,
 ) {
   const stmts = {
@@ -433,7 +433,7 @@ function importPersonnelProfile(
 // ============================================================
 function importWorkTimeOff(
   db: Database.Database, dir: string,
-  upsertUser: (id: string | undefined, name: string) => void,
+  upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   _logger: Logger, inc: Inc,
 ) {
   const stmts = {
@@ -687,7 +687,7 @@ function importWorkTimeOff(
 // ============================================================
 function importOther(
   db: Database.Database, dir: string,
-  upsertUser: (id: string | undefined, name: string) => void,
+  upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   _logger: Logger, inc: Inc,
 ) {
   const stmts = {

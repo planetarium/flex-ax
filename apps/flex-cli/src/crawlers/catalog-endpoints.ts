@@ -41,12 +41,20 @@ export async function crawlCatalogEndpoints(
     return result;
   }
 
-  // 같은 id의 엔트리를 중복 제거 (첫 번째만 사용)
+  // 같은 id의 엔트리를 중복 제거 (첫 번째만 사용).
+  // 안전을 위해 read-only 메서드(GET/POST search 류)만 수집 대상으로 삼는다.
+  // PUT/PATCH/DELETE는 서버 상태를 변경할 수 있으므로 크롤러에서 호출하지 않는다.
   const seenIds = new Set<string>();
   const uniqueEntries: CatalogEntry[] = [];
   for (const entry of catalog.entries) {
     if (!entry.id) continue;
     if (HANDLED_BY_DEDICATED_CRAWLERS.has(entry.id)) continue;
+    if (entry.method !== "GET" && entry.method !== "POST") {
+      logger.info(
+        `카탈로그 엔드포인트 스킵: ${entry.id} (method=${entry.method}, 읽기 전용 아님)`,
+      );
+      continue;
+    }
     if (seenIds.has(entry.id)) continue;
     seenIds.add(entry.id);
     uniqueEntries.push(entry);
