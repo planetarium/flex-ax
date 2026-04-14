@@ -44,15 +44,29 @@ export async function importToSqlite(
   // 사용자 수집용
   const users = new Map<string, { name: string; aliases: Set<string> }>();
 
+  const PLACEHOLDER_NAME = "(unknown)";
+
+  /**
+   * 사용자 정보를 수집한다.
+   * - id만 있고 이름이 없거나 "unknown"이면 placeholder로 저장 (FK 무결성 확보)
+   * - 같은 id가 placeholder로 먼저 저장된 후 실제 이름이 들어오면 이름을 갱신
+   * - 같은 id에 여러 실제 이름이 들어오면 aliases에 축적
+   */
   function upsertUser(id: string | undefined, name: string): void {
-    if (!id || !name || name === "unknown") return;
+    if (!id) return;
+    const isRealName = name && name !== "unknown" && name !== PLACEHOLDER_NAME;
+    const effectiveName = isRealName ? name : PLACEHOLDER_NAME;
     const existing = users.get(id);
     if (existing) {
-      if (existing.name !== name) {
-        existing.aliases.add(name);
+      if (isRealName) {
+        if (existing.name === PLACEHOLDER_NAME) {
+          existing.name = effectiveName;
+        } else if (existing.name !== effectiveName) {
+          existing.aliases.add(effectiveName);
+        }
       }
     } else {
-      users.set(id, { name, aliases: new Set() });
+      users.set(id, { name: effectiveName, aliases: new Set() });
     }
   }
 

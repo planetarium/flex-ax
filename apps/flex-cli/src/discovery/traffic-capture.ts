@@ -46,16 +46,12 @@ function truncateResponse(body: unknown, depth = 0): { truncated: unknown; total
 
   if (body && typeof body === "object") {
     const result: Record<string, unknown> = {};
-    let itemCount: number | undefined;
-
     for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
-      const { truncated, totalItems } = truncateResponse(value, depth + 1);
+      const { truncated } = truncateResponse(value, depth + 1);
       result[key] = truncated;
-      if (totalItems !== undefined) {
-        itemCount = totalItems;
-      }
     }
-    return { truncated: result, totalItems: itemCount };
+    // totalItems는 최상위가 배열인 경우에만 의미가 있으므로 object 분기에서는 전파하지 않는다
+    return { truncated: result };
   }
 
   return { truncated: body };

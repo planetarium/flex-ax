@@ -48,6 +48,27 @@ function importCompanyOrg(
   upsertUser: (id: string | undefined, name: string) => void,
   logger: Logger, inc: Inc,
 ) {
+  // Prepared statements (루프 밖에서 한 번만 prepare)
+  const stmts = {
+    customer: db.prepare(`
+      INSERT OR REPLACE INTO customers
+        (id, name, establish_date, logo_file_key, logo_image_url,
+         title_image_preset_id, mission, mission_description,
+         legal_name, business_reg_number, corp_reg_number,
+         phone_number, address_full, address_country, address_zip,
+         jurisdiction_code, in_corporate_group, raw)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `),
+    department: db.prepare(`
+      INSERT OR REPLACE INTO departments (id, customer_id, parent_id, name, visible, display_order, begin_date, end_date)
+      VALUES (?,?,?,?,?,?,?,?)
+    `),
+    jobTitle: db.prepare(`INSERT OR REPLACE INTO job_titles (id, customer_id, name, display_order, active) VALUES (?,?,?,?,?)`),
+    jobRole: db.prepare(`INSERT OR REPLACE INTO job_roles (id, customer_id, name, display_order, active) VALUES (?,?,?,?,?)`),
+    jobRank: db.prepare(`INSERT OR REPLACE INTO job_ranks (id, customer_id, name, display_order, active) VALUES (?,?,?,?,?)`),
+    disciplineType: db.prepare(`INSERT OR REPLACE INTO discipline_types (id, customer_id, type, name) VALUES (?,?,?,?)`),
+  };
+
   db.transaction(() => {
     // customers
     const f = readEndpoint(dir, "customer-info.json");
@@ -55,15 +76,7 @@ function importCompanyOrg(
       const d = f.data as Record<string, unknown>;
       const legal = (d.legalInfo ?? {}) as Record<string, unknown>;
       const addr = (legal.address ?? {}) as Record<string, unknown>;
-      db.prepare(`
-        INSERT OR REPLACE INTO customers
-          (id, name, establish_date, logo_file_key, logo_image_url,
-           title_image_preset_id, mission, mission_description,
-           legal_name, business_reg_number, corp_reg_number,
-           phone_number, address_full, address_country, address_zip,
-           jurisdiction_code, in_corporate_group, raw)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      `).run(
+      stmts.customer.run(
         d.customerIdHash, legal.name ?? d.customerIdHash,
         legal.establishDate ?? null, d.logoImageFileKey ?? null,
         d.logoImageFileUrl ?? null, d.titleImagePresetIdHash ?? null,
@@ -83,10 +96,7 @@ function importCompanyOrg(
     // departments
     const df = readEndpoint(dir, "departments-search.json");
     for (const row of df?.data ?? []) {
-      db.prepare(`
-        INSERT OR REPLACE INTO departments (id, customer_id, parent_id, name, visible, display_order, begin_date, end_date)
-        VALUES (?,?,?,?,?,?,?,?)
-      `).run(
+      stmts.department.run(
         row.idHash, row.customerIdHash, row.parentDepartmentIdHash ?? null,
         row.name, row.visible ? 1 : 0, row.displayOrder ?? null,
         row.beginDateTime ? String(row.beginDateTime).slice(0, 10) : null,
@@ -98,7 +108,7 @@ function importCompanyOrg(
     // job_titles
     const jtf = readEndpoint(dir, "customer-job-titles.json");
     for (const row of jtf?.data ?? []) {
-      db.prepare(`INSERT OR REPLACE INTO job_titles (id, customer_id, name, display_order, active) VALUES (?,?,?,?,?)`).run(
+      stmts.jobTitle.run(
         row.idHash, row.customerIdHash, row.name, row.displayOrder ?? null, row.active ? 1 : 0,
       );
       inc("job_titles");
@@ -107,7 +117,7 @@ function importCompanyOrg(
     // job_roles
     const jrf = readEndpoint(dir, "customer-job-roles.json");
     for (const row of jrf?.data ?? []) {
-      db.prepare(`INSERT OR REPLACE INTO job_roles (id, customer_id, name, display_order, active) VALUES (?,?,?,?,?)`).run(
+      stmts.jobRole.run(
         row.idHash, row.customerIdHash, row.name, row.displayOrder ?? null, row.active ? 1 : 0,
       );
       inc("job_roles");
@@ -116,7 +126,7 @@ function importCompanyOrg(
     // job_ranks
     const jrkf = readEndpoint(dir, "customer-job-ranks.json");
     for (const row of jrkf?.data ?? []) {
-      db.prepare(`INSERT OR REPLACE INTO job_ranks (id, customer_id, name, display_order, active) VALUES (?,?,?,?,?)`).run(
+      stmts.jobRank.run(
         row.idHash, row.customerIdHash, row.name, row.displayOrder ?? null, row.active ? 1 : 0,
       );
       inc("job_ranks");
@@ -133,7 +143,7 @@ function importCompanyOrg(
         );
         continue;
       }
-      db.prepare(`INSERT OR REPLACE INTO discipline_types (id, customer_id, type, name) VALUES (?,?,?,?)`).run(
+      stmts.disciplineType.run(
         row.disciplineIdHash, disciplineCustomerId, row.type, row.name,
       );
       inc("discipline_types");
@@ -260,7 +270,8 @@ function importEmployeeHR(
       const { personal, payrollBankAccount } = personalFile.data;
       if (personal) {
         upsertUser(personal.userIdHash, personal.name ?? personal.displayName ?? "");
-        const ssnMasked = personal.ssn ? personal.ssn.slice(0, 7) + "*******" : null;
+        // 스키마 주석: 앞 6자리(YYMMDD) + 마스킹. 하이픈/성별자리는 저장하지 않는다.
+        const ssnMasked = personal.ssn ? personal.ssn.slice(0, 6) + "-*******" : null;
         stmts.userPersonal.run(
           personal.userIdHash, personal.customerIdHash,
           personal.email ?? null, personal.nameInOffice ?? null,
