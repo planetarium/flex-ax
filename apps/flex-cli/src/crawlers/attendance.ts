@@ -77,7 +77,10 @@ export async function crawlAttendanceApprovals(
           type: use.timeOffPolicyType ?? "TIME_OFF",
           applicant: {
             id: use.userIdHash,
-            name: use.userIdHash ?? "unknown", // 이름은 별도 API 필요
+            // 이름은 이 엔드포인트에서 제공되지 않으므로 비워둔다.
+            // import 단계의 upsertUser가 placeholder로 등록하고,
+            // 다른 엔드포인트에서 실제 이름이 들어오면 자동 갱신한다.
+            name: "",
           },
           appliedAt: use.timeOffRegisterDateFrom ?? "",
           details: {

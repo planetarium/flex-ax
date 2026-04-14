@@ -31,6 +31,26 @@ function isApiUrl(url: string): boolean {
 }
 
 /**
+ * pathname의 ID-like 세그먼트를 {id}로 치환해 중복 제거 키를 만든다.
+ * - 긴 영숫자/헥스/대시 문자열(20자 이상)
+ * - 순수 숫자 세그먼트
+ * - 숫자 범위 표현(예: `1767193200000..1798729200000`)
+ */
+function normalizePathForDedup(pathname: string): string {
+  return pathname
+    .split("/")
+    .map((seg) => {
+      if (!seg) return seg;
+      if (/^[a-f0-9-]{20,}$/i.test(seg)) return "{id}";
+      if (/^[a-zA-Z0-9]{20,}$/.test(seg)) return "{id}";
+      if (/^\d+$/.test(seg)) return "{id}";
+      if (/^\d+\.\.\d+$/.test(seg)) return "{range}";
+      return seg;
+    })
+    .join("/");
+}
+
+/**
  * 응답 바디를 간결하게 만든다.
  * - 배열: 첫 번째 요소만 남기고 totalItems 반환
  * - 깊이 제한
@@ -74,9 +94,9 @@ export function createTrafficCapture(page: Page): TrafficCapture {
         if (!isApiUrl(url)) return;
 
         const method = response.request().method();
-        // 중복 방지: 같은 method + URL path 패턴은 한 번만 캡처
+        // 중복 방지: 같은 method + URL 패턴(ID 세그먼트 일반화)은 한 번만 캡처
         const urlPath = new URL(url).pathname;
-        const patternKey = `${method}:${urlPath}`;
+        const patternKey = `${method}:${normalizePathForDedup(urlPath)}`;
         if (seenPatterns.has(patternKey)) return;
         seenPatterns.add(patternKey);
 

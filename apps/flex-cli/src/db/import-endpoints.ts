@@ -89,7 +89,8 @@ function importCompanyOrg(
       );
       inc("customers");
       for (const pid of (d.companyPresidentUserIdHashes ?? []) as string[]) {
-        upsertUser(pid, pid);
+        // 이름이 없으므로 placeholder로 등록 (이후 다른 엔드포인트에서 실제 이름이 들어오면 갱신됨)
+        upsertUser(pid, "");
       }
     }
 
