@@ -23,6 +23,25 @@ const HANDLED_BY_DEDICATED_CRAWLERS = new Set([
 ]);
 
 /**
+ * 민감 데이터를 반환하는 엔드포인트 id 목록.
+ * 기본적으로 크롤러에서 제외된다. `FLEX_CRAWL_SENSITIVE=true`로 오버라이드 가능.
+ *  - 급여/고용 계약: 연봉 금액, 계약 조건
+ *  - 개인정보 번들: 주민번호, 주소, 가족, 계좌 등
+ *  - 급여 계좌: 은행/계좌번호
+ *  - 이해관계자 급여: 포상/징계 사유 등
+ */
+const SENSITIVE_ENDPOINT_IDS = new Set([
+  "salary-contracts",
+  "employment-contracts-search",
+  "user-personal-bundle",
+  "payroll-permissions",
+  "user-rewards-search",
+  "user-disciplines-search",
+  "dependent-families-search",
+  "customer-birth-dates",
+]);
+
+/**
  * read-only로 안전하게 호출 가능한 POST URL 패턴.
  * search/get/find/query/lookup/list/count 류 또는 .options/.permissions 만 허용.
  * 그 외 POST는 생성/변경 가능성이 있으므로 크롤러가 호출하지 않는다.
@@ -67,6 +86,7 @@ export async function crawlCatalogEndpoints(
   // 같은 id의 엔트리를 중복 제거 (첫 번째만 사용).
   // 안전을 위해 read-only 메서드(GET/POST search 류)만 수집 대상으로 삼는다.
   // PUT/PATCH/DELETE는 서버 상태를 변경할 수 있으므로 크롤러에서 호출하지 않는다.
+  const userSkip = new Set(config.skipEndpoints);
   const seenIds = new Set<string>();
   const uniqueEntries: CatalogEntry[] = [];
   for (const entry of catalog.entries) {
@@ -82,6 +102,20 @@ export async function crawlCatalogEndpoints(
     if (entry.method === "POST" && !isSafePost(entry.urlPattern)) {
       logger.info(
         `카탈로그 엔드포인트 스킵: ${entry.id} (POST이지만 read-only allowlist 미일치)`,
+      );
+      continue;
+    }
+    // 민감 엔드포인트는 기본 스킵 (FLEX_CRAWL_SENSITIVE=true로 오버라이드)
+    if (SENSITIVE_ENDPOINT_IDS.has(entry.id) && !config.crawlSensitive) {
+      logger.info(
+        `카탈로그 엔드포인트 스킵: ${entry.id} (민감 데이터. 수집하려면 FLEX_CRAWL_SENSITIVE=true)`,
+      );
+      continue;
+    }
+    // 사용자 지정 스킵 목록
+    if (userSkip.has(entry.id)) {
+      logger.info(
+        `카탈로그 엔드포인트 스킵: ${entry.id} (FLEX_SKIP_ENDPOINTS에 지정됨)`,
       );
       continue;
     }

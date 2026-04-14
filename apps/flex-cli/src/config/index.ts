@@ -20,6 +20,21 @@ const configSchema = z
       .enum(["true", "false"])
       .transform((v) => v === "true")
       .default("true"),
+    /** 민감 엔드포인트(연봉/계약/개인정보)를 크롤링할지 여부. 기본은 false — 스킵됨 */
+    crawlSensitive: z
+      .enum(["true", "false"])
+      .transform((v) => v === "true")
+      .default("false"),
+    /** 콤마로 구분된 추가 스킵 엔드포인트 id 목록 */
+    skipEndpoints: z
+      .string()
+      .default("")
+      .transform((v) =>
+        v
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0),
+      ),
   });
 
 export type Config = z.infer<typeof configSchema>;
@@ -37,5 +52,7 @@ export function loadConfig(): Config {
     maxRetries: process.env.MAX_RETRIES || undefined,
     downloadAttachments: process.env.DOWNLOAD_ATTACHMENTS || undefined,
     headless: process.env.HEADLESS || undefined,
+    crawlSensitive: process.env.FLEX_CRAWL_SENSITIVE || undefined,
+    skipEndpoints: process.env.FLEX_SKIP_ENDPOINTS || undefined,
   });
 }
