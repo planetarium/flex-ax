@@ -64,11 +64,18 @@ export async function runCheckApis(): Promise<void> {
     const oneYearAgo = now - 365 * 24 * 60 * 60 * 1000;
     const substitute = (path: string): string =>
       path
-        .replace("{userId}", userId || "me")
+        .replace("{userId}", userId)
         .replace("{from}", String(oneYearAgo))
         .replace("{to}", String(now));
 
     for (const api of APIS_TO_CHECK) {
+      // userId가 필요한 엔드포인트인데 조회에 실패한 경우, "me"로 대체하면
+      // 항상 false negative(404)이 나와 오해를 부르므로 SKIPPED 처리한다.
+      if (api.path.includes("{userId}") && !userId) {
+        console.log(`  ${api.method.padEnd(5)} ${api.path}`);
+        console.log(`    → SKIPPED  (사용자 ID 조회 실패, 테스트 불가)`);
+        continue;
+      }
       const url = `${config.flexBaseUrl}${substitute(api.path)}`;
 
       try {

@@ -13,14 +13,13 @@ import {
   flexPost,
 } from "./shared.js";
 
-/** 기존 크롤러가 처리하는 엔드포인트 ID — 중복 수집 방지 */
+/** 기존 전용 크롤러(template/instance/attendance)가 이미 처리하므로 여기서는 스킵 */
 const HANDLED_BY_DEDICATED_CRAWLERS = new Set([
   "template-list",
   "template-detail",
   "instance-search",
   "instance-detail",
   "time-off-uses",
-  "user-me",
 ]);
 
 /**

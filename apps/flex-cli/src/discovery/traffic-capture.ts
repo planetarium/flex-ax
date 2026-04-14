@@ -26,8 +26,14 @@ const SKIP_PATTERNS = [
 ];
 
 function isApiUrl(url: string): boolean {
-  return (url.includes("/api/") || url.includes("/action/")) &&
-    !SKIP_PATTERNS.some((p) => p.test(url));
+  // `/api/`, `/action/`, `/remotes/` 경로를 API 호출로 간주한다.
+  // catalog.ts의 ENDPOINT_PATTERNS에 `/remotes/gnb/...`, `/remotes/user-profile/...`
+  // 같은 프론트엔드 BFF 경로가 포함되어 있어 캡처 대상에 포함해야 한다.
+  const isApi =
+    url.includes("/api/") ||
+    url.includes("/action/") ||
+    url.includes("/remotes/");
+  return isApi && !SKIP_PATTERNS.some((p) => p.test(url));
 }
 
 /**

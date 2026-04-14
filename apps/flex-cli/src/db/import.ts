@@ -54,8 +54,10 @@ export async function importToSqlite(
    */
   function upsertUser(id: string | undefined, name: string): void {
     if (!id) return;
-    const isRealName = name && name !== "unknown" && name !== PLACEHOLDER_NAME;
-    const effectiveName = isRealName ? name : PLACEHOLDER_NAME;
+    const trimmed = name.trim();
+    const isRealName =
+      trimmed.length > 0 && trimmed !== "unknown" && trimmed !== PLACEHOLDER_NAME;
+    const effectiveName = isRealName ? trimmed : PLACEHOLDER_NAME;
     const existing = users.get(id);
     if (existing) {
       if (isRealName) {
