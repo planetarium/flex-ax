@@ -194,34 +194,47 @@ async function authenticatePlaywriter(
     await remotePage.goto(config.flexBaseUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
   }
 
-  const cookieStr = await remotePage.evaluate(() => document.cookie);
+  // httpOnly 쿠키까지 포함하도록 Playwright context API로 전체 쿠키를 수집한다.
+  // (document.cookie는 httpOnly 쿠키를 반환하지 않으므로 V2_WS_AID 등이 누락될 수 있다.)
+  const origin = new URL(config.flexBaseUrl).origin;
+  let remoteCookies = await remoteContext.cookies(origin).catch(() => [] as Awaited<ReturnType<typeof remoteContext.cookies>>);
+
+  // context.cookies()가 빈 배열을 주면 document.cookie로 폴백
+  let cookieStr: string;
+  if (remoteCookies.length > 0) {
+    cookieStr = remoteCookies.map((c) => `${c.name}=${c.value}`).join("; ");
+  } else {
+    cookieStr = await remotePage.evaluate(() => document.cookie);
+    remoteCookies = cookieStr
+      .split(";")
+      .map((pair) => {
+        const [name, ...rest] = pair.trim().split("=");
+        return {
+          name: name.trim(),
+          value: rest.join("="),
+          domain: new URL(config.flexBaseUrl).hostname,
+          path: "/",
+        };
+      })
+      .filter((c) => c.name && c.value) as typeof remoteCookies;
+  }
 
   // CDP 연결 해제 (사용자 브라우저는 닫지 않음)
   remoteBrowser.close().catch(() => {});
 
-  if (!cookieStr) {
+  if (remoteCookies.length === 0) {
     throw new Error(
       "Playwriter에서 쿠키를 가져올 수 없습니다. " +
       "Chrome에서 flex.team에 로그인되어 있는지 확인하세요.",
     );
   }
 
-  const parsedCookies = cookieStr.split(";").map((pair) => {
-    const [name, ...rest] = pair.trim().split("=");
-    return {
-      name: name.trim(),
-      value: rest.join("="),
-      domain: new URL(config.flexBaseUrl).hostname,
-      path: "/",
-    };
-  }).filter((c) => c.name && c.value);
-
-  logger.info(`쿠키 ${parsedCookies.length}개 확보`);
+  logger.info(`쿠키 ${remoteCookies.length}개 확보`);
 
   // 3. headless 브라우저에 쿠키 주입
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
-  await context.addCookies(parsedCookies);
+  await context.addCookies(remoteCookies);
 
   const page = await context.newPage();
   const authHeaders: Record<string, string> = { cookie: cookieStr };
