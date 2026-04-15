@@ -50,18 +50,15 @@ export async function runCrawl(): Promise<void> {
   }
 
   // 인증
-  let authCtx!: AuthContext;
-  try {
-    authCtx = await authenticate(config, logger);
-  } catch (error) {
+  const authCtx = await authenticate(config, logger).catch((error) => {
     logger.error("인증 실패", {
       error: error instanceof Error ? error.message : String(error),
     });
     process.exit(1);
-  }
+  });
 
   // 법인(회사) enumerate
-  let corporations!: Corporation[];
+  let corporations: Corporation[];
   try {
     corporations = await listCorporations(authCtx, config.flexBaseUrl);
   } catch (error) {

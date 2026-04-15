@@ -198,12 +198,14 @@ async function authenticatePlaywriter(
   // (document.cookie는 httpOnly 쿠키를 반환하지 않으므로 V2_WS_AID 등이 누락될 수 있다.)
   const origin = new URL(config.flexBaseUrl).origin;
   let remoteCookies = await remoteContext.cookies(origin).catch(() => [] as Awaited<ReturnType<typeof remoteContext.cookies>>);
+  let usedFallback = false;
 
   // context.cookies()가 빈 배열을 주면 document.cookie로 폴백
   let cookieStr: string;
   if (remoteCookies.length > 0) {
     cookieStr = remoteCookies.map((c) => `${c.name}=${c.value}`).join("; ");
   } else {
+    usedFallback = true;
     cookieStr = await remotePage.evaluate(() => document.cookie);
     remoteCookies = cookieStr
       .split(";")
@@ -227,6 +229,16 @@ async function authenticatePlaywriter(
       "Playwriter에서 쿠키를 가져올 수 없습니다. " +
       "Chrome에서 flex.team에 로그인되어 있는지 확인하세요.",
     );
+  }
+
+  // 멀티-법인 전환에 필수인 V2_WS_AID가 확보됐는지 즉시 검증한다.
+  // 폴백 경로(document.cookie)에서는 httpOnly 쿠키를 얻을 수 없으므로 여기서 빠르게 실패시킨다.
+  const hasWsAid = remoteCookies.some((c) => c.name === "V2_WS_AID");
+  if (!hasWsAid) {
+    const hint = usedFallback
+      ? "httpOnly 쿠키를 가져올 수 없는 경로(document.cookie 폴백)라 V2_WS_AID를 얻지 못했을 수 있습니다. Playwriter Extension 연결 상태를 확인하세요."
+      : "Chrome에서 flex.team에 다시 로그인하면 갱신됩니다.";
+    throw new Error(`V2_WS_AID 쿠키를 찾을 수 없습니다 — 법인 전환(switchCustomer)이 불가능합니다. ${hint}`);
   }
 
   logger.info(`쿠키 ${remoteCookies.length}개 확보`);
