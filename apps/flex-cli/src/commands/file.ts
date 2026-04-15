@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { createReadStream } from "node:fs";
 import { loadConfig } from "../config/index.js";
+import { resolveFlexDataDir } from "../paths/index.js";
 import path from "node:path";
 
 export async function runFile(): Promise<void> {
@@ -22,7 +23,14 @@ export async function runFile(): Promise<void> {
     console.error(`[FLEX-AX:ERROR] 설정 로딩 실패: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
   }
-  const dbPath = path.resolve(config.outputDir, "flex-ax.db");
+  let resolved: ReturnType<typeof resolveFlexDataDir>;
+  try {
+    resolved = resolveFlexDataDir(config.outputDir);
+  } catch (error) {
+    console.error(`[FLEX-AX:ERROR] ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+  const dbPath = path.resolve(resolved.resolvedPath, "flex-ax.db");
 
   let db: InstanceType<typeof Database>;
   try {
