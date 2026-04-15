@@ -54,7 +54,7 @@ function setupHeaderCapture(
       const reqHostname = new URL(url).hostname;
       if (reqHostname === baseHostname && (url.includes("/api/") || url.includes("/action/"))) {
         const headers = request.headers();
-        for (const key of ["authorization", "cookie", "x-csrf-token"]) {
+        for (const key of ["authorization", "cookie", "x-csrf-token", "x-flex-aid", "x-flex-axios"]) {
           if (headers[key]) {
             authHeaders[key] = headers[key];
           }
@@ -194,34 +194,59 @@ async function authenticatePlaywriter(
     await remotePage.goto(config.flexBaseUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
   }
 
-  const cookieStr = await remotePage.evaluate(() => document.cookie);
+  // httpOnly 쿠키까지 포함하도록 Playwright context API로 전체 쿠키를 수집한다.
+  // (document.cookie는 httpOnly 쿠키를 반환하지 않으므로 V2_WS_AID 등이 누락될 수 있다.)
+  const origin = new URL(config.flexBaseUrl).origin;
+  let remoteCookies = await remoteContext.cookies(origin).catch(() => [] as Awaited<ReturnType<typeof remoteContext.cookies>>);
+  let usedFallback = false;
+
+  // context.cookies()가 빈 배열을 주면 document.cookie로 폴백
+  let cookieStr: string;
+  if (remoteCookies.length > 0) {
+    cookieStr = remoteCookies.map((c) => `${c.name}=${c.value}`).join("; ");
+  } else {
+    usedFallback = true;
+    cookieStr = await remotePage.evaluate(() => document.cookie);
+    remoteCookies = cookieStr
+      .split(";")
+      .map((pair) => {
+        const [name, ...rest] = pair.trim().split("=");
+        return {
+          name: name.trim(),
+          value: rest.join("="),
+          domain: new URL(config.flexBaseUrl).hostname,
+          path: "/",
+        };
+      })
+      .filter((c) => c.name && c.value) as typeof remoteCookies;
+  }
 
   // CDP 연결 해제 (사용자 브라우저는 닫지 않음)
   remoteBrowser.close().catch(() => {});
 
-  if (!cookieStr) {
+  if (remoteCookies.length === 0) {
     throw new Error(
       "Playwriter에서 쿠키를 가져올 수 없습니다. " +
       "Chrome에서 flex.team에 로그인되어 있는지 확인하세요.",
     );
   }
 
-  const parsedCookies = cookieStr.split(";").map((pair) => {
-    const [name, ...rest] = pair.trim().split("=");
-    return {
-      name: name.trim(),
-      value: rest.join("="),
-      domain: new URL(config.flexBaseUrl).hostname,
-      path: "/",
-    };
-  }).filter((c) => c.name && c.value);
+  // 멀티-법인 전환에 필수인 V2_WS_AID가 확보됐는지 즉시 검증한다.
+  // 폴백 경로(document.cookie)에서는 httpOnly 쿠키를 얻을 수 없으므로 여기서 빠르게 실패시킨다.
+  const hasWsAid = remoteCookies.some((c) => c.name === "V2_WS_AID");
+  if (!hasWsAid) {
+    const hint = usedFallback
+      ? "httpOnly 쿠키를 가져올 수 없는 경로(document.cookie 폴백)라 V2_WS_AID를 얻지 못했을 수 있습니다. Playwriter Extension 연결 상태를 확인하세요."
+      : "Chrome에서 flex.team에 다시 로그인하면 갱신됩니다.";
+    throw new Error(`V2_WS_AID 쿠키를 찾을 수 없습니다 — 법인 전환(switchCustomer)이 불가능합니다. ${hint}`);
+  }
 
-  logger.info(`쿠키 ${parsedCookies.length}개 확보`);
+  logger.info(`쿠키 ${remoteCookies.length}개 확보`);
 
   // 3. headless 브라우저에 쿠키 주입
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
-  await context.addCookies(parsedCookies);
+  await context.addCookies(remoteCookies);
 
   const page = await context.newPage();
   const authHeaders: Record<string, string> = { cookie: cookieStr };
@@ -238,6 +263,156 @@ async function authenticatePlaywriter(
 
   console.log("[FLEX-AX:AUTH] Playwriter CDP relay로 로그인 성공");
   return { browser, context, page, authHeaders };
+}
+
+export interface Corporation {
+  customerIdHash: string;
+  userIdHash: string;
+  name: string;
+  isRepresentative: boolean;
+  displayOrder: number;
+}
+
+interface AffiliatesResponse {
+  currentUser?: {
+    customer: { customerIdHash: string; name: string; isRepresentative: boolean; displayOrder: number };
+    user: { userIdHash: string };
+  };
+  users: Array<{
+    customer: { customerIdHash: string; name: string; isRepresentative: boolean; displayOrder: number };
+    user: { userIdHash: string };
+  }>;
+}
+
+/**
+ * 현재 로그인한 사용자가 속한 법인(회사) 목록을 조회한다.
+ * `users` 배열에 (회사 × 유저) 페어가 들어있고, 회사마다 userIdHash가 다르다.
+ */
+export async function listCorporations(authCtx: AuthContext, baseUrl: string): Promise<Corporation[]> {
+  const url = `${baseUrl}/api/v2/core/users/me/workspace-users-corp-group-affiliates`;
+  const data = await authCtx.page.evaluate(
+    async ([fetchUrl, headers]) => {
+      const res = await fetch(fetchUrl, { headers: headers as Record<string, string> });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${fetchUrl}`);
+      return (await res.json()) as AffiliatesResponse;
+    },
+    [url, authCtx.authHeaders] as const,
+  );
+
+  const fromUsers = data.users.map((u) => ({
+    customerIdHash: u.customer.customerIdHash,
+    userIdHash: u.user.userIdHash,
+    name: u.customer.name,
+    isRepresentative: u.customer.isRepresentative,
+    displayOrder: u.customer.displayOrder,
+  }));
+
+  if (fromUsers.length > 0) return fromUsers;
+
+  // fallback: currentUser만 있는 경우
+  if (data.currentUser) {
+    return [
+      {
+        customerIdHash: data.currentUser.customer.customerIdHash,
+        userIdHash: data.currentUser.user.userIdHash,
+        name: data.currentUser.customer.name,
+        isRepresentative: data.currentUser.customer.isRepresentative,
+        displayOrder: data.currentUser.customer.displayOrder,
+      },
+    ];
+  }
+
+  return [];
+}
+
+/**
+ * 지정된 법인 컨텍스트용 JWT를 발급받아 authHeaders에 주입한다.
+ * 이후 모든 flex API 호출은 해당 법인 스코프로 동작한다.
+ *
+ * 인증 방식: 워크스페이스 레벨 JWT(V2_WS_AID 쿠키)를 `flexteam-v2-workspace-access`
+ * 헤더로 전달하면, 서버가 해당 법인 스코프의 고객 JWT를 반환한다.
+ *
+ * @param customerIdHash  법인 식별자. API 바디에는 `customerUuid` 필드로 전달된다.
+ * @param userIdHash      해당 법인에서의 사용자 식별자. API 바디에는 `userUuid` 필드로 전달된다.
+ */
+export async function switchCustomer(
+  authCtx: AuthContext,
+  baseUrl: string,
+  customerIdHash: string,
+  userIdHash: string,
+): Promise<void> {
+  const url = `${baseUrl}/api-public/v2/auth/tokens/customer-user/exchange`;
+
+  // 브라우저 컨텍스트의 실제 쿠키가 진실이다.
+  // authHeaders.cookie는 네트워크 요청이 한 번도 없었거나 쿠키가 갱신된 경우 stale일 수 있다.
+  const wsAid = await getCookieFromContext(authCtx, baseUrl, "V2_WS_AID");
+  if (!wsAid) {
+    throw new Error(
+      "V2_WS_AID 쿠키를 찾을 수 없습니다. 워크스페이스 인증이 만료되었거나 쿠키가 누락되었습니다.",
+    );
+  }
+
+  // 브라우저 fetch는 컨텍스트 쿠키를 자동 첨부하므로 Cookie 헤더를 명시할 필요가 없다.
+  const exchangeHeaders: Record<string, string> = {
+    "content-type": "application/json",
+    "flexteam-v2-workspace-access": wsAid,
+    "x-flex-axios": "base",
+  };
+
+  // API 바디 필드명은 customerUuid/userUuid지만 실제 값은 hash 식별자다
+  const body = JSON.stringify({ customerUuid: customerIdHash, userUuid: userIdHash });
+
+  const result = await authCtx.page.evaluate(
+    async ([fetchUrl, headers, bodyStr]) => {
+      const res = await fetch(fetchUrl, {
+        method: "POST",
+        headers: headers as Record<string, string>,
+        body: bodyStr as string,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const errBody = await res.text();
+        throw new Error(`HTTP ${res.status}: ${fetchUrl} — ${errBody.slice(0, 200)}`);
+      }
+      return (await res.json()) as { token: string };
+    },
+    [url, exchangeHeaders, body] as const,
+  );
+
+  if (!result?.token) {
+    throw new Error(`회사 전환 토큰 발급 실패: customerIdHash=${customerIdHash}`);
+  }
+
+  authCtx.authHeaders["x-flex-aid"] = result.token;
+}
+
+/**
+ * 브라우저 컨텍스트에서 지정된 쿠키 값을 읽는다 (httpOnly 쿠키 포함).
+ * Playwright의 context.cookies()는 실제 쿠키 저장소를 반환하므로 stale 이슈가 없다.
+ */
+async function getCookieFromContext(
+  authCtx: AuthContext,
+  baseUrl: string,
+  name: string,
+): Promise<string | null> {
+  try {
+    const cookies = await authCtx.context.cookies(baseUrl);
+    const hit = cookies.find((c) => c.name === name);
+    if (hit) return hit.value;
+  } catch {
+    // context.cookies()가 일부 CDP 구성에서 실패할 수 있음 — headers 폴백
+  }
+  return extractCookieValue(authCtx.authHeaders["cookie"] ?? "", name);
+}
+
+function extractCookieValue(cookieStr: string, name: string): string | null {
+  for (const pair of cookieStr.split(";")) {
+    const trimmed = pair.trim();
+    if (trimmed.startsWith(`${name}=`)) {
+      return trimmed.slice(name.length + 1);
+    }
+  }
+  return null;
 }
 
 export async function cleanup(authCtx: AuthContext): Promise<void> {

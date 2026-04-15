@@ -1,8 +1,16 @@
+import path from "node:path";
 import { readFile } from "node:fs/promises";
 import { loadConfig, type Config } from "../config/index.js";
-import { createLogger } from "../logger/index.js";
-import { authenticate, cleanup, type AuthContext } from "../auth/index.js";
-import { createStorageWriter, type CrawlReport } from "../storage/index.js";
+import { createLogger, type Logger } from "../logger/index.js";
+import {
+  authenticate,
+  cleanup,
+  listCorporations,
+  switchCustomer,
+  type AuthContext,
+  type Corporation,
+} from "../auth/index.js";
+import { createStorageWriter, type CrawlReport, type StorageWriter } from "../storage/index.js";
 import type { ApiCatalog } from "../types/catalog.js";
 import { crawlTemplates } from "../crawlers/template.js";
 import { crawlInstances } from "../crawlers/instance.js";
@@ -42,23 +50,110 @@ export async function runCrawl(): Promise<void> {
   }
 
   // 인증
-  let authCtx: AuthContext;
-  try {
-    authCtx = await authenticate(config, logger);
-  } catch (error) {
+  const authCtx = await authenticate(config, logger).catch((error) => {
     logger.error("인증 실패", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    process.exit(1);
+  });
+
+  // 법인(회사) enumerate
+  let corporations: Corporation[];
+  try {
+    corporations = await listCorporations(authCtx, config.flexBaseUrl);
+  } catch (error) {
+    await cleanup(authCtx);
+    logger.error("법인 목록 조회 실패", {
       error: error instanceof Error ? error.message : String(error),
     });
     process.exit(1);
   }
 
-  const storage = createStorageWriter(config.outputDir, config.catalogPath);
+  if (config.customers.length > 0) {
+    const requested = new Set(config.customers);
+    corporations = corporations.filter((c) => requested.has(c.customerIdHash));
+    const missing = [...requested].filter(
+      (id) => !corporations.some((c) => c.customerIdHash === id),
+    );
+    if (missing.length > 0) {
+      logger.warn("요청한 법인이 접근 가능 목록에 없음", { missing });
+    }
+  }
+
+  if (corporations.length === 0) {
+    await cleanup(authCtx);
+    logger.error("크롤링할 법인이 없습니다");
+    process.exit(1);
+  }
+
+  logger.info("법인별 크롤링 시작", {
+    count: corporations.length,
+    names: corporations.map((c) => c.name),
+  });
+
+  const allErrors: CrawlError[] = [];
+  try {
+    for (const corp of corporations) {
+      if (!isSafeIdHash(corp.customerIdHash)) {
+        logger.error("customerIdHash 형식이 안전하지 않아 스킵", {
+          customerIdHash: corp.customerIdHash,
+          name: corp.name,
+        });
+        allErrors.push({
+          target: `customer:${corp.customerIdHash}`,
+          phase: "validate-customer",
+          message: `unsafe customerIdHash: ${corp.customerIdHash}`,
+          timestamp: new Date().toISOString(),
+        });
+        continue;
+      }
+      logger.info("법인 전환", { customerIdHash: corp.customerIdHash, name: corp.name });
+      try {
+        await switchCustomer(authCtx, config.flexBaseUrl, corp.customerIdHash, corp.userIdHash);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error("법인 전환 실패 — 스킵", { customerIdHash: corp.customerIdHash, error: message });
+        allErrors.push({
+          target: `customer:${corp.customerIdHash}`,
+          phase: "switch-customer",
+          message,
+          timestamp: new Date().toISOString(),
+        });
+        continue;
+      }
+
+      const errors = await runCrawlForCustomer(authCtx, config, catalog, corp, logger);
+      allErrors.push(...errors);
+    }
+  } finally {
+    await cleanup(authCtx);
+  }
+
+  if (allErrors.length > 0) {
+    for (const err of allErrors) {
+      console.log(`[FLEX-AX:ERROR] ${err.target}: ${err.message}`);
+    }
+    process.exit(2);
+  }
+}
+
+async function runCrawlForCustomer(
+  authCtx: AuthContext,
+  config: Config,
+  catalog: ApiCatalog | null,
+  corp: Corporation,
+  logger: Logger,
+): Promise<CrawlError[]> {
+  const customerOutputDir = path.join(config.outputDir, corp.customerIdHash);
+  const storage: StorageWriter = createStorageWriter(customerOutputDir, config.catalogPath);
+
   const startedAt = new Date().toISOString();
   const startTime = Date.now();
-  let templateResult: CrawlResult = { totalCount: 0, successCount: 0, failureCount: 0, errors: [], durationMs: 0 };
-  let instanceResult: CrawlResult = { totalCount: 0, successCount: 0, failureCount: 0, errors: [], durationMs: 0 };
-  let attendanceResult: CrawlResult = { totalCount: 0, successCount: 0, failureCount: 0, errors: [], durationMs: 0 };
-  let catalogEndpointsResult: CrawlResult = { totalCount: 0, successCount: 0, failureCount: 0, errors: [], durationMs: 0 };
+  let templateResult: CrawlResult = emptyResult();
+  let instanceResult: CrawlResult = emptyResult();
+  let attendanceResult: CrawlResult = emptyResult();
+  let catalogEndpointsResult: CrawlResult = emptyResult();
+  let fatalError: CrawlError | null = null;
 
   try {
     templateResult = await crawlTemplates(authCtx, config, catalog, storage, logger);
@@ -68,8 +163,18 @@ export async function runCrawl(): Promise<void> {
       authCtx, config, catalog, storage, logger, instanceCrawlResult.collectedKeys,
     );
     catalogEndpointsResult = await crawlCatalogEndpoints(authCtx, config, catalog, storage, logger);
-  } finally {
-    await cleanup(authCtx);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error("법인 크롤링 중 예외 — 지금까지의 부분 결과를 보고서에 기록합니다", {
+      customerIdHash: corp.customerIdHash,
+      error: message,
+    });
+    fatalError = {
+      target: `customer:${corp.customerIdHash}`,
+      phase: "crawl",
+      message,
+      timestamp: new Date().toISOString(),
+    };
   }
 
   const completedAt = new Date().toISOString();
@@ -78,7 +183,8 @@ export async function runCrawl(): Promise<void> {
     ...instanceResult.errors,
     ...attendanceResult.errors,
     ...catalogEndpointsResult.errors,
-  ];
+  ].map((e) => ({ ...e, target: `${corp.customerIdHash}/${e.target}` }));
+  if (fatalError) totalErrors.push(fatalError);
 
   const report: CrawlReport = {
     startedAt,
@@ -91,15 +197,35 @@ export async function runCrawl(): Promise<void> {
     totalErrors,
   };
 
-  await storage.saveReport(report);
-
-  // 구조화된 출력
-  console.log(`[FLEX-AX:CRAWL] 크롤링 완료: templates=${templateResult.successCount}, instances=${instanceResult.successCount}, attendance=${attendanceResult.successCount}, endpoints=${catalogEndpointsResult.successCount}`);
-
-  if (totalErrors.length > 0) {
-    for (const err of totalErrors) {
-      console.log(`[FLEX-AX:ERROR] ${err.target}: ${err.message}`);
-    }
-    process.exit(2);
+  // 예외 상황에서도 디버깅 가능하도록 보고서는 반드시 저장
+  try {
+    await storage.saveReport(report);
+  } catch (saveError) {
+    logger.error("크롤 보고서 저장 실패", {
+      customerIdHash: corp.customerIdHash,
+      error: saveError instanceof Error ? saveError.message : String(saveError),
+    });
   }
+
+  const statusLabel = fatalError ? "중단(부분 결과)" : "완료";
+  console.log(
+    `[FLEX-AX:CRAWL] ${corp.name} (${corp.customerIdHash}) ${statusLabel}: ` +
+      `templates=${templateResult.successCount}, instances=${instanceResult.successCount}, ` +
+      `attendance=${attendanceResult.successCount}, endpoints=${catalogEndpointsResult.successCount}`,
+  );
+
+  return totalErrors;
+}
+
+/**
+ * flex API에서 오는 ID 해시는 통상 영숫자 10자 내외다.
+ * 외부 입력이 디렉토리 경로로 쓰이므로 path traversal을 방지하기 위해
+ * 허용 문자셋을 엄격히 제한한다.
+ */
+function isSafeIdHash(id: string): boolean {
+  return typeof id === "string" && id.length > 0 && id.length <= 64 && /^[A-Za-z0-9_-]+$/.test(id);
+}
+
+function emptyResult(): CrawlResult {
+  return { totalCount: 0, successCount: 0, failureCount: 0, errors: [], durationMs: 0 };
 }

@@ -35,6 +35,19 @@ const configSchema = z
           .map((s) => s.trim())
           .filter((s) => s.length > 0),
       ),
+    /**
+     * 크롤링할 법인(customerIdHash) 목록. 콤마 구분.
+     * 비어있으면 사용자가 속한 모든 법인을 대상으로 한다.
+     */
+    customers: z
+      .string()
+      .default("")
+      .transform((v) =>
+        v
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0),
+      ),
   });
 
 export type Config = z.infer<typeof configSchema>;
@@ -54,5 +67,6 @@ export function loadConfig(): Config {
     headless: process.env.HEADLESS || undefined,
     crawlSensitive: process.env.FLEX_CRAWL_SENSITIVE || undefined,
     skipEndpoints: process.env.FLEX_SKIP_ENDPOINTS || undefined,
+    customers: process.env.FLEX_CUSTOMERS || undefined,
   });
 }
