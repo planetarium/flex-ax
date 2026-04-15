@@ -21,14 +21,24 @@ export async function runImport(): Promise<void> {
   const customerDirs = await discoverCustomerDirs(config.outputDir, logger);
 
   if (customerDirs.length === 0) {
-    // 레거시(법인 분리 전) 구조 폴백
+    // outputDir 자체에 크롤 아티팩트가 있는 경우: (a) 레거시 단일 구조 또는
+    // (b) outputDir이 이미 특정 법인 디렉토리(output/<customerIdHash>)를 직접 가리키는 경우
     if (hasCrawlArtifacts(config.outputDir)) {
-      // FLEX_CUSTOMERS 필터가 있는데 법인 구조 자체가 없으면 사용자 의도와 어긋남 — 중단
       if (config.customers.length > 0) {
+        const dirBasename = path.basename(path.resolve(config.outputDir));
+        // outputDir의 basename이 요청한 법인과 일치하면 그대로 임포트 (케이스 b)
+        if (config.customers.includes(dirBasename)) {
+          logger.info("outputDir이 특정 법인 디렉토리를 가리킴 — 단일 법인 임포트", {
+            customerIdHash: dirBasename,
+          });
+          await importOne(config.outputDir, config.outputDir, logger);
+          return;
+        }
+        // 그 외엔 필터와 데이터가 어긋남 — 중단
         logger.error(
-          "FLEX_CUSTOMERS가 지정됐지만 outputDir이 법인별로 분리되어 있지 않습니다. " +
-            "크롤을 먼저 실행해 법인별 디렉토리를 생성하거나, 필터를 제거해 주세요.",
-          { customers: config.customers, outputDir: config.outputDir },
+          "FLEX_CUSTOMERS가 지정됐지만 outputDir이 해당 법인 디렉토리가 아니고 " +
+            "법인별로 분리되어 있지도 않습니다. 크롤을 먼저 실행하거나, 필터를 제거해 주세요.",
+          { customers: config.customers, outputDir: config.outputDir, basename: dirBasename },
         );
         process.exit(1);
       }
