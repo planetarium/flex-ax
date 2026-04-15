@@ -63,9 +63,19 @@ export async function crawlInstances(
       );
 
       const docs = page.documents ?? [];
+      const firstDocKey = docs[0]?.document.documentKey ?? null;
+      const lastDocKeyInPage = docs[docs.length - 1]?.document.documentKey ?? null;
       if (result.totalCount === 0) {
         logger.info(`총 ${page.total}건의 문서 발견`);
       }
+      logger.info("인스턴스 페이지 수신", {
+        total: page.total,
+        hasNext: page.hasNext,
+        docsInPage: docs.length,
+        requestLastDocumentKey: lastDocumentKey ?? null,
+        firstDocumentKey: firstDocKey,
+        lastDocumentKeyInPage: lastDocKeyInPage,
+      });
 
       let newInPage = 0;
       for (const doc of docs) {
@@ -120,6 +130,15 @@ export async function crawlInstances(
 
         await delay(config.requestDelayMs);
       }
+
+      logger.info("인스턴스 페이지 처리 완료", {
+        totalCollected: result.totalCount,
+        successCount: result.successCount,
+        failureCount: result.failureCount,
+        newInPage,
+        hasNext: page.hasNext,
+        nextLastDocumentKeyCandidate: lastDocKeyInPage,
+      });
 
       // 이 페이지에 새 문서가 없으면 커서가 전진 안 하는 것 → 종료
       if (newInPage === 0) {

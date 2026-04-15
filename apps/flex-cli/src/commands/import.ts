@@ -4,6 +4,7 @@ import path from "node:path";
 import { loadConfig, type Config } from "../config/index.js";
 import { createLogger, type Logger } from "../logger/index.js";
 import { importToSqlite } from "../db/import.js";
+import { resolveFlexDataDir } from "../paths/index.js";
 
 export async function runImport(): Promise<void> {
   const logger = createLogger("IMPORT");
@@ -21,35 +22,39 @@ export async function runImport(): Promise<void> {
   const customerDirs = await discoverCustomerDirs(config.outputDir, logger);
 
   if (customerDirs.length === 0) {
-    // outputDir 자체에 크롤 아티팩트가 있는 경우: (a) 레거시 단일 구조 또는
-    // (b) outputDir이 이미 특정 법인 디렉토리(output/<customerIdHash>)를 직접 가리키는 경우
     if (hasCrawlArtifacts(config.outputDir)) {
+      let resolved: ReturnType<typeof resolveFlexDataDir>;
+      try {
+        resolved = resolveFlexDataDir(config.outputDir);
+      } catch (error) {
+        logger.error(error instanceof Error ? error.message : String(error));
+        process.exit(1);
+      }
+
       if (config.customers.length > 0) {
-        const dirBasename = path.basename(path.resolve(config.outputDir));
-        // outputDir의 basename이 요청한 법인과 일치하면 그대로 임포트 (케이스 b)
+        const dirBasename = path.basename(resolved.resolvedPath);
         if (config.customers.includes(dirBasename)) {
           logger.info("outputDir이 특정 법인 디렉토리를 가리킴 — 단일 법인 임포트", {
             customerIdHash: dirBasename,
           });
-          await importOne(config.outputDir, config.outputDir, logger);
+          await importOne(resolved.resolvedPath, resolved.resolvedPath, logger);
           return;
         }
-        // 그 외엔 필터와 데이터가 어긋남 — 중단
         logger.error(
-          "FLEX_CUSTOMERS가 지정됐지만 outputDir이 해당 법인 디렉토리가 아니고 " +
-            "법인별로 분리되어 있지도 않습니다. 크롤을 먼저 실행하거나, 필터를 제거해 주세요.",
-          { customers: config.customers, outputDir: config.outputDir, basename: dirBasename },
+          "FLEX_CUSTOMERS가 지정됐지만 outputDir이 해당 법인 디렉토리가 아닙니다.",
+          { customers: config.customers, outputDir: resolved.resolvedPath, basename: dirBasename },
         );
         process.exit(1);
       }
-      await importOne(config.outputDir, config.outputDir, logger);
+
+      await importOne(resolved.resolvedPath, resolved.resolvedPath, logger);
       return;
     }
+
     logger.error("임포트할 데이터가 없습니다", { outputDir: config.outputDir });
     process.exit(1);
   }
 
-  // customers 필터가 있으면 해당 법인만
   const targets =
     config.customers.length > 0
       ? customerDirs.filter((d) => config.customers.includes(path.basename(d)))
@@ -78,13 +83,6 @@ async function importOne(sourceDir: string, dbDir: string, logger: Logger): Prom
   console.log(`[FLEX-AX:IMPORT] users=${result.users}, fields=${result.fieldValues}, approvals=${result.approvalLines}, comments=${result.comments}, attachments=${result.attachments}`);
 }
 
-/**
- * outputDir 바로 아래에서 크롤 아티팩트(templates/ 등)를 가진 하위 디렉토리를 찾는다.
- * 각 하위 디렉토리는 하나의 법인(customerIdHash)에 해당한다.
- *
- * 경로가 존재하지 않거나 읽기에 실패하면 빈 배열을 반환한다 — 호출부가
- * "법인 분리 없음"으로 간주해 레거시 단일 구조 폴백으로 이어갈 수 있게 한다.
- */
 async function discoverCustomerDirs(
   outputDir: string,
   logger: Logger,

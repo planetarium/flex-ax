@@ -1,3 +1,6 @@
+import { appendFileSync, mkdirSync } from "node:fs";
+import path from "node:path";
+
 export interface Logger {
   info(message: string, meta?: Record<string, unknown>): void;
   warn(message: string, meta?: Record<string, unknown>): void;
@@ -28,22 +31,40 @@ function formatMeta(meta?: Record<string, unknown>): string {
   return " " + JSON.stringify(sanitize(meta));
 }
 
+function resolveLogFilePath(): string {
+  return path.resolve(process.env.FLEX_AX_LOG_FILE || "./output/flex-ax.log");
+}
+
+function writeLogLine(line: string): void {
+  const logFilePath = resolveLogFilePath();
+  mkdirSync(path.dirname(logFilePath), { recursive: true });
+  appendFileSync(logFilePath, `${line}\n`, "utf-8");
+}
+
 export function createLogger(prefix?: string): Logger {
   const tag = prefix ? `[FLEX-AX:${prefix}]` : "";
 
   return {
     info(message, meta) {
-      console.log(`[${timestamp()}] INFO  ${tag} ${message}${formatMeta(meta)}`);
+      const line = `[${timestamp()}] INFO  ${tag} ${message}${formatMeta(meta)}`;
+      console.log(line);
+      writeLogLine(line);
     },
     warn(message, meta) {
-      console.warn(`[${timestamp()}] WARN  ${tag} ${message}${formatMeta(meta)}`);
+      const line = `[${timestamp()}] WARN  ${tag} ${message}${formatMeta(meta)}`;
+      console.warn(line);
+      writeLogLine(line);
     },
     error(message, meta) {
-      console.error(`[${timestamp()}] ERROR ${tag} ${message}${formatMeta(meta)}`);
+      const line = `[${timestamp()}] ERROR ${tag} ${message}${formatMeta(meta)}`;
+      console.error(line);
+      writeLogLine(line);
     },
     progress(phase, current, total) {
       const totalStr = total != null ? `/${total}` : "";
-      process.stdout.write(`\r[${timestamp()}] ${phase}: ${current}${totalStr}`);
+      const line = `[${timestamp()}] ${phase}: ${current}${totalStr}`;
+      process.stdout.write(`\r${line}`);
+      writeLogLine(line);
     },
   };
 }
