@@ -33,123 +33,29 @@ export async function crawlInstances(
     config.flexBaseUrl, catalog, "instance-search",
     "/action/v3/approval-document/user-boxes/search",
   );
+  const detailBase = resolveUrl(
+    config.flexBaseUrl, catalog, "instance-detail",
+    "/api/v3/approval-document/approval-documents",
+  );
 
   try {
-    const statuses = ["IN_PROGRESS", "DONE", "DECLINED", "CANCELED"];
-    let lastDocumentKey: string | undefined;
-    let hasMore = true;
+    const searchGroups: SearchGroup[] = [
+      { label: "in-progress", statuses: ["IN_PROGRESS"] },
+      { label: "done", statuses: ["DONE", "DECLINED", "CANCELED"] },
+    ];
 
-    while (hasMore) {
-      const searchBody = {
-        filter: {
-          statuses,
-          templateKeys: [],
-          writerHashedIds: [],
-          approverTargets: [],
-          referrerTargets: [],
-          starred: false,
-        },
-        search: { keyword: "", type: "ALL" },
-        ...(lastDocumentKey ? { lastDocumentKey } : {}),
-      };
-
-      const page = await withRetry(
-        () => flexPost<SearchResponse>(
-          authCtx,
-          `${searchUrl}?size=20&sortType=LAST_UPDATED_AT&direction=DESC`,
-          searchBody,
-        ),
-        { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
+    for (const group of searchGroups) {
+      await crawlSearchGroup(
+        authCtx,
+        config,
+        storage,
+        logger,
+        result,
+        collectedKeys,
+        searchUrl,
+        detailBase,
+        group,
       );
-
-      const docs = page.documents ?? [];
-      const firstDocKey = docs[0]?.document.documentKey ?? null;
-      const lastDocKeyInPage = docs[docs.length - 1]?.document.documentKey ?? null;
-      if (result.totalCount === 0) {
-        logger.info(`총 ${page.total}건의 문서 발견`);
-      }
-      logger.info("인스턴스 페이지 수신", {
-        total: page.total,
-        hasNext: page.hasNext,
-        docsInPage: docs.length,
-        requestLastDocumentKey: lastDocumentKey ?? null,
-        firstDocumentKey: firstDocKey,
-        lastDocumentKeyInPage: lastDocKeyInPage,
-      });
-
-      let newInPage = 0;
-      for (const doc of docs) {
-        const docKey = doc.document.documentKey;
-
-        // 중복 스킵
-        if (collectedKeys.has(docKey)) {
-          continue;
-        }
-
-        result.totalCount++;
-        newInPage++;
-
-        try {
-          logger.progress("인스턴스 수집", result.successCount + result.failureCount + 1, page.total);
-
-          const detailBase = resolveUrl(
-            config.flexBaseUrl, catalog, "instance-detail",
-            "/api/v3/approval-document/approval-documents",
-          );
-          const hasPathParam = /\{[^}]+\}/.test(detailBase);
-          const detailUrl = hasPathParam
-            ? detailBase.replace(/\{[^}]+\}/, docKey)
-            : `${detailBase}/${docKey}`;
-
-          const detail = await withRetry(
-            () => flexFetch<DocumentDetailResponse>(authCtx, detailUrl),
-            { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
-          );
-
-          const attachments = await processAttachments(
-            authCtx, config, docKey, detail.document.attachments ?? [], storage, logger,
-          );
-
-          const instance = mapInstance(detail, attachments);
-          await storage.saveInstance(instance);
-          collectedKeys.add(docKey);
-          result.successCount++;
-        } catch (error) {
-          collectedKeys.add(docKey); // 실패해도 재시도 방지
-          result.failureCount++;
-          result.errors.push({
-            target: `instance:${docKey}`,
-            phase: "detail",
-            message: error instanceof Error ? error.message : String(error),
-            timestamp: nowISO(),
-          });
-          logger.error(`인스턴스 수집 실패: ${docKey}`, {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-
-        await delay(config.requestDelayMs);
-      }
-
-      logger.info("인스턴스 페이지 처리 완료", {
-        totalCollected: result.totalCount,
-        successCount: result.successCount,
-        failureCount: result.failureCount,
-        newInPage,
-        hasNext: page.hasNext,
-        nextLastDocumentKeyCandidate: lastDocKeyInPage,
-      });
-
-      // 이 페이지에 새 문서가 없으면 커서가 전진 안 하는 것 → 종료
-      if (newInPage === 0) {
-        logger.warn("새 문서 없음 — 페이지네이션 종료");
-        hasMore = false;
-      } else {
-        hasMore = page.hasNext && docs.length > 0;
-        if (hasMore) {
-          lastDocumentKey = docs[docs.length - 1].document.documentKey;
-        }
-      }
     }
   } catch (error) {
     logger.error("인스턴스 목록 수집 중 치명적 오류", {
@@ -168,11 +74,163 @@ export async function crawlInstances(
   return { ...result, collectedKeys };
 }
 
+interface SearchGroup {
+  label: string;
+  statuses: string[];
+}
+
+async function crawlSearchGroup(
+  authCtx: AuthContext,
+  config: Config,
+  storage: StorageWriter,
+  logger: Logger,
+  result: CrawlResult,
+  collectedKeys: Set<string>,
+  searchUrl: string,
+  detailBase: string,
+  group: SearchGroup,
+): Promise<void> {
+  logger.info("인스턴스 검색 그룹 시작", {
+    group: group.label,
+    statuses: group.statuses,
+  });
+
+  let continuationToken: string | undefined;
+  let hasMore = true;
+  let isFirstPage = true;
+
+  while (hasMore) {
+    const searchBody = {
+      filter: {
+        statuses: group.statuses,
+        templateKeys: [],
+        writerHashedIds: [],
+        approverTargets: [],
+        referrerTargets: [],
+        starred: false,
+      },
+      search: { keyword: "", type: "ALL" },
+    };
+
+    const searchParams = new URLSearchParams({
+      size: "20",
+      sortType: "LAST_UPDATED_AT",
+      direction: "DESC",
+    });
+    if (continuationToken) {
+      searchParams.set("continuationToken", continuationToken);
+    }
+
+    const page = await withRetry(
+      () => flexPost<SearchResponse>(
+        authCtx,
+        `${searchUrl}?${searchParams.toString()}`,
+        searchBody,
+      ),
+      { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
+    );
+
+    const docs = page.documents ?? [];
+    const firstDocKey = docs[0]?.document.documentKey ?? null;
+    const lastDocKeyInPage = docs[docs.length - 1]?.document.documentKey ?? null;
+    if (isFirstPage) {
+      logger.info(`인스턴스 그룹 ${group.label}: 총 ${page.total}건의 문서 발견`);
+      isFirstPage = false;
+    }
+    logger.info("인스턴스 페이지 수신", {
+      group: group.label,
+      statuses: group.statuses,
+      total: page.total,
+      hasNext: page.hasNext,
+      docsInPage: docs.length,
+      requestContinuationToken: continuationToken ?? null,
+      firstDocumentKey: firstDocKey,
+      lastDocumentKeyInPage: lastDocKeyInPage,
+      nextContinuationToken: page.continuationToken ?? null,
+    });
+
+    let newInPage = 0;
+    for (const doc of docs) {
+      const docKey = doc.document.documentKey;
+
+      if (collectedKeys.has(docKey)) {
+        continue;
+      }
+
+      result.totalCount++;
+      newInPage++;
+
+      try {
+        logger.progress("인스턴스 수집", result.successCount + result.failureCount + 1, page.total);
+
+        const hasPathParam = /\{[^}]+\}/.test(detailBase);
+        const detailUrl = hasPathParam
+          ? detailBase.replace(/\{[^}]+\}/, docKey)
+          : `${detailBase}/${docKey}`;
+
+        const detail = await withRetry(
+          () => flexFetch<DocumentDetailResponse>(authCtx, detailUrl),
+          { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
+        );
+
+        const attachments = await processAttachments(
+          authCtx, config, docKey, detail.document.attachments ?? [], storage, logger,
+        );
+
+        const instance = mapInstance(detail, attachments);
+        await storage.saveInstance(instance);
+        collectedKeys.add(docKey);
+        result.successCount++;
+      } catch (error) {
+        collectedKeys.add(docKey);
+        result.failureCount++;
+        result.errors.push({
+          target: `instance:${docKey}`,
+          phase: "detail",
+          message: error instanceof Error ? error.message : String(error),
+          timestamp: nowISO(),
+        });
+        logger.error(`인스턴스 수집 실패: ${docKey}`, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      await delay(config.requestDelayMs);
+    }
+
+    logger.info("인스턴스 페이지 처리 완료", {
+      group: group.label,
+      totalCollected: result.totalCount,
+      successCount: result.successCount,
+      failureCount: result.failureCount,
+      newInPage,
+      hasNext: page.hasNext,
+      nextLastDocumentKeyCandidate: lastDocKeyInPage,
+      nextContinuationTokenCandidate: page.continuationToken ?? null,
+    });
+
+    if (newInPage === 0) {
+      logger.warn("새 문서 없음 — 페이지네이션 종료", { group: group.label });
+      hasMore = false;
+    } else {
+      hasMore = page.hasNext && docs.length > 0;
+      if (hasMore) {
+        continuationToken = page.continuationToken;
+        if (!continuationToken) {
+          logger.warn("continuationToken 없음 — 페이지네이션 종료", { group: group.label });
+          hasMore = false;
+        }
+      }
+    }
+  }
+}
+
 // --- flex API 응답 타입 ---
 
 interface SearchResponse {
   hasNext: boolean;
   total: number;
+  continuationToken?: string;
   documents: Array<{
     document: {
       documentKey: string;
