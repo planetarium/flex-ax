@@ -136,12 +136,21 @@ export async function crawlAttendanceApprovals(
       }
 
       if (data.hasNext) {
-        continuationToken = data.continuationToken;
-        nextCursor = data.nextCursor;
-        if (!continuationToken && !nextCursor) {
+        const nextContinuationToken = data.continuationToken ?? continuationToken;
+        const nextPageCursor = data.nextCursor ?? nextCursor;
+
+        if (!nextContinuationToken && !nextPageCursor) {
           logger.warn("hasNext=true 이지만 continuationToken/nextCursor 없음 — 페이지네이션 종료");
           hasMore = false;
+        } else if (
+          nextContinuationToken === continuationToken &&
+          nextPageCursor === nextCursor
+        ) {
+          logger.warn("attendance cursor 정체 — 페이지네이션 종료");
+          hasMore = false;
         } else {
+          continuationToken = nextContinuationToken;
+          nextCursor = nextPageCursor;
           await delay(config.requestDelayMs);
           pageNumber += 1;
         }
