@@ -205,23 +205,28 @@ async function crawlSearchGroup(
       failureCount: result.failureCount,
       newInPage,
       hasNext: page.hasNext,
-      nextLastDocumentKeyCandidate: lastDocKeyInPage,
       nextContinuationTokenCandidate: page.continuationToken ?? null,
     });
 
-    if (newInPage === 0) {
-      logger.warn("새 문서 없음 — 페이지네이션 종료", { group: group.label });
-      hasMore = false;
-    } else {
-      hasMore = page.hasNext && docs.length > 0;
-      if (hasMore) {
-        continuationToken = page.continuationToken;
-        if (!continuationToken) {
-          logger.warn("continuationToken 없음 — 페이지네이션 종료", { group: group.label });
-          hasMore = false;
-        }
-      }
+    hasMore = page.hasNext && docs.length > 0;
+    if (!hasMore) {
+      continue;
     }
+
+    const nextContinuationToken = page.continuationToken;
+    if (!nextContinuationToken) {
+      logger.warn("continuationToken 없음 — 페이지네이션 종료", { group: group.label });
+      hasMore = false;
+      continue;
+    }
+
+    if (nextContinuationToken === continuationToken) {
+      logger.warn("continuationToken 정체 — 페이지네이션 종료", { group: group.label });
+      hasMore = false;
+      continue;
+    }
+
+    continuationToken = nextContinuationToken;
   }
 }
 

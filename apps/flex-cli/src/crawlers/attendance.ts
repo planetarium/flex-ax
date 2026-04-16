@@ -142,6 +142,7 @@ export async function crawlAttendanceApprovals(
           logger.warn("hasNext=true 이지만 continuationToken/nextCursor 없음 — 페이지네이션 종료");
           hasMore = false;
         } else {
+          await delay(config.requestDelayMs);
           pageNumber += 1;
         }
       } else {
