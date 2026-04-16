@@ -1,4 +1,3 @@
-import "dotenv/config";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -26,6 +25,8 @@ if (command === "--version" || command === "-v") {
   console.log(`flex-ax ${pkg.version}`);
   process.exit(0);
 }
+
+await import("dotenv/config");
 
 switch (command) {
   case "discover": {
