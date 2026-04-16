@@ -59,65 +59,104 @@ export async function crawlAttendanceApprovals(
   const url = `${config.flexBaseUrl}/api/v2/time-off/users/${userId}/time-off-uses/by-use-date-range/${oneYearAgo}..${now}`;
 
   try {
-    const data = await withRetry(
-      () => flexFetch<TimeOffUsesResponse>(authCtx, url),
-      { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
-    );
+    let continuationToken: string | undefined;
+    let nextCursor: string | undefined;
+    let pageNumber = 1;
+    let hasMore = true;
 
-    const uses = data.timeOffUses ?? [];
-    logger.info(`휴가 사용 내역: ${uses.length}건 발견`);
+    while (hasMore) {
+      const pageUrl = buildTimeOffUsesUrl(url, continuationToken, nextCursor);
+      const data = await withRetry(
+        () => flexFetch<TimeOffUsesResponse>(authCtx, pageUrl),
+        { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
+      );
 
-    for (const use of uses) {
-      const id = use.userTimeOffRegisterEventId;
-      if (!id) continue;
+      const uses = data.timeOffUses ?? [];
+      logger.info("휴가 사용 내역 페이지 수신", {
+        page: pageNumber,
+        usesInPage: uses.length,
+        hasNext: data.hasNext ?? false,
+        requestContinuationToken: continuationToken ?? null,
+        requestNextCursor: nextCursor ?? null,
+        nextContinuationToken: data.continuationToken ?? null,
+        nextCursor: data.nextCursor ?? null,
+      });
 
-      if (collectedInstanceKeys.has(id)) {
-        logger.info(`중복 스킵: ${id} (인스턴스에서 이미 수집)`);
-        continue;
+      for (const use of uses) {
+        const id = use.userTimeOffRegisterEventId;
+        if (!id) continue;
+
+        if (collectedInstanceKeys.has(id)) {
+          logger.info(`중복 스킵: ${id} (인스턴스에서 이미 수집)`);
+          continue;
+        }
+
+        result.totalCount++;
+
+        try {
+          const approval: AttendanceApproval = {
+            id,
+            type: use.timeOffPolicyType ?? "TIME_OFF",
+            applicant: {
+              id: use.userIdHash,
+              // 이름은 이 엔드포인트에서 제공되지 않으므로 비워둔다.
+              // import 단계의 upsertUser가 placeholder로 등록하고,
+              // 다른 엔드포인트에서 실제 이름이 들어오면 자동 갱신한다.
+              name: "",
+            },
+            appliedAt: use.timeOffRegisterDateFrom ?? "",
+            details: {
+              dateFrom: use.timeOffRegisterDateFrom,
+              dateTo: use.timeOffRegisterDateTo,
+              days: use.useTime?.timeOffDays,
+              minutes: use.useTime?.timeOffMinutes,
+              policyType: use.timeOffPolicyType,
+              canceled: use.canceled,
+            },
+            status: mapStatus(use.timeOffUseStatus, use.approvalStatus?.status),
+            processedAt: use.timeOffRegisteredAt
+              ? new Date(use.timeOffRegisteredAt).toISOString()
+              : undefined,
+            _raw: use,
+          };
+
+          await storage.saveAttendanceApproval(approval);
+          result.successCount++;
+        } catch (error) {
+          result.failureCount++;
+          result.errors.push({
+            target: `attendance:${id}`,
+            phase: "detail",
+            message: error instanceof Error ? error.message : String(error),
+            timestamp: nowISO(),
+          });
+        }
+
+        await delay(config.requestDelayMs);
       }
 
-      result.totalCount++;
+      if (data.hasNext) {
+        const nextContinuationToken = data.continuationToken ?? continuationToken;
+        const nextPageCursor = data.nextCursor ?? nextCursor;
 
-      try {
-        const approval: AttendanceApproval = {
-          id,
-          type: use.timeOffPolicyType ?? "TIME_OFF",
-          applicant: {
-            id: use.userIdHash,
-            // 이름은 이 엔드포인트에서 제공되지 않으므로 비워둔다.
-            // import 단계의 upsertUser가 placeholder로 등록하고,
-            // 다른 엔드포인트에서 실제 이름이 들어오면 자동 갱신한다.
-            name: "",
-          },
-          appliedAt: use.timeOffRegisterDateFrom ?? "",
-          details: {
-            dateFrom: use.timeOffRegisterDateFrom,
-            dateTo: use.timeOffRegisterDateTo,
-            days: use.useTime?.timeOffDays,
-            minutes: use.useTime?.timeOffMinutes,
-            policyType: use.timeOffPolicyType,
-            canceled: use.canceled,
-          },
-          status: mapStatus(use.timeOffUseStatus, use.approvalStatus?.status),
-          processedAt: use.timeOffRegisteredAt
-            ? new Date(use.timeOffRegisteredAt).toISOString()
-            : undefined,
-          _raw: use,
-        };
-
-        await storage.saveAttendanceApproval(approval);
-        result.successCount++;
-      } catch (error) {
-        result.failureCount++;
-        result.errors.push({
-          target: `attendance:${id}`,
-          phase: "detail",
-          message: error instanceof Error ? error.message : String(error),
-          timestamp: nowISO(),
-        });
+        if (!nextContinuationToken && !nextPageCursor) {
+          logger.warn("hasNext=true 이지만 continuationToken/nextCursor 없음 — 페이지네이션 종료");
+          hasMore = false;
+        } else if (
+          nextContinuationToken === continuationToken &&
+          nextPageCursor === nextCursor
+        ) {
+          logger.warn("attendance cursor 정체 — 페이지네이션 종료");
+          hasMore = false;
+        } else {
+          continuationToken = nextContinuationToken;
+          nextCursor = nextPageCursor;
+          await delay(config.requestDelayMs);
+          pageNumber += 1;
+        }
+      } else {
+        hasMore = false;
       }
-
-      await delay(config.requestDelayMs);
     }
   } catch (error) {
     logger.warn("휴가 사용 내역 수집 실패", {
@@ -199,6 +238,15 @@ interface TimeOffUsesResponse {
     canceled?: boolean;
   }>;
   hasNext?: boolean;
+  continuationToken?: string;
+  nextCursor?: string;
+}
+
+function buildTimeOffUsesUrl(baseUrl: string, continuationToken?: string, nextCursor?: string): string {
+  const url = new URL(baseUrl);
+  if (continuationToken) url.searchParams.set("continuationToken", continuationToken);
+  if (nextCursor) url.searchParams.set("nextCursor", nextCursor);
+  return url.toString();
 }
 
 function mapStatus(useStatus?: string, approvalStatus?: string): string {
