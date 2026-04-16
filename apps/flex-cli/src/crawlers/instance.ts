@@ -161,7 +161,7 @@ async function crawlSearchGroup(
       newInPage++;
 
       try {
-        logger.progress("인스턴스 수집", result.successCount + result.failureCount + 1, page.total);
+        logger.progress("인스턴스 수집", result.successCount + result.failureCount + 1);
 
         const hasPathParam = /\{[^}]+\}/.test(detailBase);
         const detailUrl = hasPathParam
