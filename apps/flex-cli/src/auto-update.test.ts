@@ -79,13 +79,21 @@ describe("compareVersions", () => {
     assert.ok(compareVersions("1.0.0", "0.99.99") > 0);
   });
 
-  it("treats prerelease suffix as the base version", () => {
-    assert.equal(compareVersions("0.5.4-rc1", "0.5.4"), 0);
+  it("orders prerelease below the corresponding release", () => {
+    assert.ok(compareVersions("0.5.4-rc1", "0.5.4") < 0);
+    assert.ok(compareVersions("0.5.4", "0.5.4-rc1") > 0);
+  });
+
+  it("compares two prereleases by suffix", () => {
+    assert.ok(compareVersions("0.5.4-rc1", "0.5.4-rc2") < 0);
+    assert.equal(compareVersions("0.5.4-rc1", "0.5.4-rc1"), 0);
   });
 
   it("supports the downgrade-skip predicate (latest <= current)", () => {
     assert.ok(compareVersions("0.5.0", "0.5.4") <= 0); // remote stale → skip
     assert.ok(compareVersions("0.5.4", "0.5.4") <= 0); // already latest → skip
     assert.ok(compareVersions("0.6.0", "0.5.4") > 0); // upgrade available
+    // current가 prerelease이고 latest가 release면 업그레이드해야 한다.
+    assert.ok(compareVersions("0.5.4", "0.5.4-rc1") > 0);
   });
 });

@@ -69,13 +69,26 @@ function isInstalledRun(): boolean {
 }
 
 export function compareVersions(a: string, b: string): number {
-  const parse = (v: string) =>
-    v.split("-")[0].split(".").map((n) => Number.parseInt(n, 10) || 0);
-  const [a1 = 0, a2 = 0, a3 = 0] = parse(a);
-  const [b1 = 0, b2 = 0, b3 = 0] = parse(b);
-  if (a1 !== b1) return a1 - b1;
-  if (a2 !== b2) return a2 - b2;
-  return a3 - b3;
+  const split = (v: string): { base: number[]; pre: string | null } => {
+    const dash = v.indexOf("-");
+    const baseStr = dash === -1 ? v : v.slice(0, dash);
+    const pre = dash === -1 ? null : v.slice(dash + 1);
+    return {
+      base: baseStr.split(".").map((n) => Number.parseInt(n, 10) || 0),
+      pre,
+    };
+  };
+  const A = split(a);
+  const B = split(b);
+  for (let i = 0; i < 3; i++) {
+    const diff = (A.base[i] ?? 0) - (B.base[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  // semver: base가 같다면 prerelease 있는 쪽이 더 낮다.
+  if (A.pre === null && B.pre === null) return 0;
+  if (A.pre === null) return 1;
+  if (B.pre === null) return -1;
+  return A.pre < B.pre ? -1 : A.pre > B.pre ? 1 : 0;
 }
 
 async function fetchLatestWithTimeout(): Promise<string | null> {
@@ -162,10 +175,19 @@ export async function maybeAutoUpdate(originalArgs: string[]): Promise<void> {
     // 호출자가 정확한 종료 사유를 알 수 있도록 한다. Windows 등 일부
     // 플랫폼에서는 미지원 시그널이 ERR_UNKNOWN_SIGNAL을 던질 수 있으므로
     // 그때는 조용히 exit 1로 떨어진다.
+    let signalSent = false;
     try {
       process.kill(process.pid, result.signal);
+      signalSent = true;
     } catch {
       // ignore — 아래 process.exit으로 fallback
+    }
+    if (signalSent) {
+      // 시그널이 즉시 도착하지 않을 수 있으므로 잠깐 대기. 이벤트 루프가
+      // 비어 있으면 unref로 끝나도 process가 자연 종료되지 않으니, 이 경우
+      // 100ms 후 fallback으로 exit 1.
+      setTimeout(() => process.exit(1), 100).unref();
+      return;
     }
     process.exit(1);
   }
