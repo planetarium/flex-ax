@@ -4,6 +4,8 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import semver from "semver";
+
 import {
   downloadAndInstall,
   getCurrentVersion,
@@ -69,26 +71,14 @@ function isInstalledRun(): boolean {
 }
 
 export function compareVersions(a: string, b: string): number {
-  const split = (v: string): { base: number[]; pre: string | null } => {
-    const dash = v.indexOf("-");
-    const baseStr = dash === -1 ? v : v.slice(0, dash);
-    const pre = dash === -1 ? null : v.slice(dash + 1);
-    return {
-      base: baseStr.split(".").map((n) => Number.parseInt(n, 10) || 0),
-      pre,
-    };
-  };
-  const A = split(a);
-  const B = split(b);
-  for (let i = 0; i < 3; i++) {
-    const diff = (A.base[i] ?? 0) - (B.base[i] ?? 0);
-    if (diff !== 0) return diff;
-  }
-  // semver: base가 같다면 prerelease 있는 쪽이 더 낮다.
-  if (A.pre === null && B.pre === null) return 0;
-  if (A.pre === null) return 1;
-  if (B.pre === null) return -1;
-  return A.pre < B.pre ? -1 : A.pre > B.pre ? 1 : 0;
+  // SemVer §11 (numeric prerelease ordering, dot-separated identifiers 등)을
+  // 직접 구현하면 rc10/rc2, alpha.1 같은 케이스를 놓치기 쉬워 검증된
+  // semver 패키지에 위임한다. 둘 중 하나라도 invalid면 자동 업데이트를
+  // 건너뛰는 게 안전하므로 0(동등)으로 떨어진다.
+  const av = semver.valid(a);
+  const bv = semver.valid(b);
+  if (!av || !bv) return 0;
+  return semver.compare(av, bv);
 }
 
 async function fetchLatestWithTimeout(): Promise<string | null> {

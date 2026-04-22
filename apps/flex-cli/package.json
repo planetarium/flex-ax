@@ -24,6 +24,7 @@
     "better-sqlite3": "^12.8.0",
     "dotenv": "^16.4.7",
     "playwright": "^1.50.1",
+    "semver": "^7.7.4",
     "zod": "^3.24.2"
   },
   "engines": {
@@ -32,6 +33,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.13.5",
+    "@types/semver": "^7.7.1",
     "rimraf": "^6.0.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"

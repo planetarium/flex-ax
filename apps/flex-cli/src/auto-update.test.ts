@@ -84,9 +84,20 @@ describe("compareVersions", () => {
     assert.ok(compareVersions("0.5.4", "0.5.4-rc1") > 0);
   });
 
-  it("compares two prereleases by suffix", () => {
+  it("compares two prereleases by SemVer §11 (numeric, dotted)", () => {
     assert.ok(compareVersions("0.5.4-rc1", "0.5.4-rc2") < 0);
     assert.equal(compareVersions("0.5.4-rc1", "0.5.4-rc1"), 0);
+    // dot-separated numeric identifier: numeric ordering kicks in.
+    // 단순 문자열 비교라면 rc.2 > rc.10이었을 케이스.
+    assert.ok(compareVersions("1.0.0-rc.2", "1.0.0-rc.10") < 0);
+    assert.ok(compareVersions("1.0.0-alpha.1", "1.0.0-alpha.2") < 0);
+    assert.ok(compareVersions("1.0.0-alpha", "1.0.0-alpha.1") < 0);
+    assert.ok(compareVersions("1.0.0-alpha.1", "1.0.0-beta") < 0);
+  });
+
+  it("returns 0 for invalid versions (skip auto-update)", () => {
+    assert.equal(compareVersions("not-a-version", "0.5.4"), 0);
+    assert.equal(compareVersions("0.5.4", ""), 0);
   });
 
   it("supports the downgrade-skip predicate (latest <= current)", () => {
