@@ -9,12 +9,13 @@ import {
   getLatestVersion,
 } from "./commands/update.js";
 
-const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+export const SUCCESS_TTL_MS = 6 * 60 * 60 * 1000;
+export const FAILURE_TTL_MS = 30 * 60 * 1000;
 const NETWORK_TIMEOUT_MS = 2000;
 const REENTRY_GUARD_ENV = "FLEX_AX_AUTO_UPDATE_REENTRY";
 
-interface CheckCache {
-  lastCheckedAt: number;
+export interface CheckCache {
+  checkedAt: number;
   latestVersion?: string;
 }
 
@@ -37,13 +38,19 @@ async function writeCache(cache: CheckCache): Promise<void> {
   await writeFile(cachePath, JSON.stringify(cache, null, 2));
 }
 
-function isOptedOut(): boolean {
-  const v = process.env.FLEX_AX_AUTO_UPDATE;
+export function isCacheFresh(cache: CheckCache | null, now: number): boolean {
+  if (!cache) return false;
+  const ttl = cache.latestVersion ? SUCCESS_TTL_MS : FAILURE_TTL_MS;
+  return now - cache.checkedAt < ttl;
+}
+
+export function isOptedOut(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env.FLEX_AX_AUTO_UPDATE;
   return v === "false" || v === "0" || v === "no";
 }
 
-function isCi(): boolean {
-  const v = process.env.CI;
+export function isCi(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env.CI;
   return v === "true" || v === "1";
 }
 
@@ -73,17 +80,26 @@ export async function maybeAutoUpdate(originalArgs: string[]): Promise<void> {
   if (process.env[REENTRY_GUARD_ENV] === "1") return;
   if (!isInstalledRun()) return;
 
-  const cache = await readCache();
-  const now = Date.now();
-  if (cache && now - cache.lastCheckedAt < CHECK_INTERVAL_MS) return;
-
   const current = await getCurrentVersion().catch(() => null);
   if (!current) return;
 
-  const latest = await fetchLatestWithTimeout();
-  if (!latest) return;
+  const now = Date.now();
+  const cached = await readCache();
 
-  await writeCache({ lastCheckedAt: now, latestVersion: latest }).catch(() => {});
+  let latest: string | null = null;
+  if (isCacheFresh(cached, now)) {
+    latest = cached?.latestVersion ?? null;
+  } else {
+    latest = await fetchLatestWithTimeout();
+    // 성공 시 SUCCESS_TTL, 실패 시 FAILURE_TTL짜리 캐시를 남겨
+    // 네트워크 장애가 지속될 때 매 실행마다 2초 대기를 막는다.
+    await writeCache(
+      latest
+        ? { checkedAt: now, latestVersion: latest }
+        : { checkedAt: now },
+    ).catch(() => {});
+  }
+  if (!latest) return;
 
   if (current === latest) return;
 
@@ -114,5 +130,18 @@ export async function maybeAutoUpdate(originalArgs: string[]): Promise<void> {
     stdio: "inherit",
     env: { ...process.env, [REENTRY_GUARD_ENV]: "1" },
   });
-  process.exit(result.status ?? 0);
+
+  if (result.error) {
+    console.error(
+      `[FLEX-AX] 자동 업데이트 후 재실행 실패: ${result.error.message}`,
+    );
+    process.exit(1);
+  }
+  if (result.signal) {
+    // 자식이 시그널로 종료된 경우 동일 시그널로 자기 자신을 종료해
+    // 호출자가 정확한 종료 사유를 알 수 있도록 한다.
+    process.kill(process.pid, result.signal);
+    process.exit(1);
+  }
+  process.exit(result.status ?? 1);
 }
