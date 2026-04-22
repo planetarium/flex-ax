@@ -139,6 +139,10 @@ export async function maybeAutoUpdate(originalArgs: string[]): Promise<void> {
     console.error(
       `[FLEX-AX] 자동 업데이트 실패, 기존 버전으로 진행합니다: ${err instanceof Error ? err.message : err}`,
     );
+    // 같은 latest를 계속 잡고 매 호출마다 다운로드/설치를 재시도하면
+    // 네트워크나 권한 문제가 지속될 때 에러 로그가 6시간 동안 반복된다.
+    // 실패 캐시(FAILURE_TTL)로 전환해 최소 30분은 조용하도록 둔다.
+    await writeCache({ checkedAt: Date.now() }).catch(() => {});
     return;
   }
 
