@@ -5,37 +5,31 @@
   "type": "module",
   "description": "flex HR SaaS AX CLI - discover, crawl, and manage flex data",
   "bin": {
-    "flex-ax": "./dist/cli.js"
+    "flex-ax": "./dist/flex-ax"
   },
   "files": [
-    "dist",
-    "!dist/**/*.map"
+    "dist"
   ],
   "scripts": {
-    "start": "tsx src/cli.ts",
-    "crawl": "tsx src/cli.ts crawl",
-    "install-skills": "tsx src/cli.ts install-skills",
-    "build": "tsc -p tsconfig.build.json && node scripts/postbuild.cjs",
-    "test": "tsx --test src/**/*.test.ts",
+    "start": "bun src/cli.ts",
+    "crawl": "bun src/cli.ts crawl",
+    "install-skills": "bun src/cli.ts install-skills",
+    "build": "bun build ./src/cli.ts --compile --outfile ./dist/flex-ax --external electron --external 'chromium-bidi/*' --external 'chromium-bidi'",
+    "test": "bun test",
     "lint": "tsc --noEmit",
     "clean": "rimraf output dist"
   },
   "dependencies": {
-    "better-sqlite3": "^12.8.0",
     "dotenv": "^16.4.7",
     "playwright": "^1.50.1",
     "semver": "^7.7.4",
     "zod": "^3.24.2"
   },
-  "engines": {
-    "node": "20.x || 22.x || 23.x || 24.x || 25.x"
-  },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
+    "@types/bun": "^1.3.12",
     "@types/node": "^22.13.5",
     "@types/semver": "^7.7.1",
     "rimraf": "^6.0.1",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   }
 }
