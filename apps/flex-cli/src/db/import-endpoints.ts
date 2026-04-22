@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { Logger } from "../logger/index.js";
@@ -15,7 +15,7 @@ function readEndpoint(endpointsDir: string, filename: string): any | null {
 }
 
 export function importEndpoints(
-  db: Database.Database,
+  db: Database,
   endpointsDir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   logger: Logger,
@@ -54,7 +54,7 @@ type EnsureCustomer = (customerId: string | null | undefined) => void;
 // Company / Org
 // ============================================================
 function importCompanyOrg(
-  db: Database.Database, dir: string,
+  db: Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   ensureCustomer: EnsureCustomer,
   logger: Logger, inc: Inc,
@@ -174,7 +174,7 @@ function importCompanyOrg(
 // Employee / HR
 // ============================================================
 function importEmployeeHR(
-  db: Database.Database, dir: string,
+  db: Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   ensureCustomer: EnsureCustomer,
   _logger: Logger, inc: Inc,
@@ -370,7 +370,7 @@ function importEmployeeHR(
 // Personnel / Profile
 // ============================================================
 function importPersonnelProfile(
-  db: Database.Database, dir: string,
+  db: Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   ensureCustomer: EnsureCustomer,
   logger: Logger, inc: Inc,
@@ -533,7 +533,7 @@ function importPersonnelProfile(
 // Work Rules / Time Off / Holidays
 // ============================================================
 function importWorkTimeOff(
-  db: Database.Database, dir: string,
+  db: Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   ensureCustomer: EnsureCustomer,
   logger: Logger, inc: Inc,
@@ -809,7 +809,7 @@ function importWorkTimeOff(
 // Other (Calendar, Todo, Feedback, Attachments, etc.)
 // ============================================================
 function importOther(
-  db: Database.Database, dir: string,
+  db: Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   ensureCustomer: EnsureCustomer,
   _logger: Logger, inc: Inc,

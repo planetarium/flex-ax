@@ -8,9 +8,11 @@ import semver from "semver";
 
 import {
   downloadAndInstall,
+  downloadBinaryAndReplace,
   getCurrentVersion,
   getLatestVersion,
 } from "./commands/update.js";
+import { isStandaloneBinary } from "./runtime.js";
 
 export const SUCCESS_TTL_MS = 6 * 60 * 60 * 1000;
 export const FAILURE_TTL_MS = 30 * 60 * 1000;
@@ -62,6 +64,8 @@ function isInteractive(): boolean {
 }
 
 function isInstalledRun(): boolean {
+  // bun compile 바이너리는 자기 자신이 곧 설치 결과이므로 항상 installed로 취급.
+  if (isStandaloneBinary()) return true;
   // npm/pnpm bin shim과 symlink는 process.argv[1]를 .../.bin/flex-ax 같이
   // 만들어 dist/cli.js와 매칭되지 않는 경우가 있다. 이 모듈 자체의 위치를
   // 보면 빌드된 dist에서 import된 경로(또는 tsx의 src/.ts)가 그대로 드러나므로
@@ -137,7 +141,11 @@ export async function maybeAutoUpdate(originalArgs: string[]): Promise<void> {
   );
 
   try {
-    await downloadAndInstall(latest);
+    if (isStandaloneBinary()) {
+      await downloadBinaryAndReplace(latest);
+    } else {
+      await downloadAndInstall(latest);
+    }
   } catch (err) {
     console.error(
       `[FLEX-AX] 자동 업데이트 실패, 기존 버전으로 진행합니다: ${err instanceof Error ? err.message : err}`,
@@ -149,7 +157,13 @@ export async function maybeAutoUpdate(originalArgs: string[]): Promise<void> {
     return;
   }
 
-  const result = spawnSync(process.execPath, [process.argv[1]!, ...originalArgs], {
+  // 바이너리 모드에선 execPath가 곧 새 바이너리이므로 스크립트 경로를 인자에
+  // 넣지 않는다. npm 배포 모드에선 node가 script 파일을 읽어야 하므로 argv[1]
+  // (cli.js 경로)을 반드시 앞에 둔다.
+  const spawnArgs = isStandaloneBinary()
+    ? [...originalArgs]
+    : [process.argv[1]!, ...originalArgs];
+  const result = spawnSync(process.execPath, spawnArgs, {
     stdio: "inherit",
     env: { ...process.env, [REENTRY_GUARD_ENV]: "1" },
   });

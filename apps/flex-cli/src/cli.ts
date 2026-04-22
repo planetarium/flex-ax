@@ -1,6 +1,4 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import pkg from "../package.json" with { type: "json" };
 
 // 자동 업데이트 시 재실행할 원본 인자 보존
 const originalArgs = process.argv.slice(2);
@@ -23,8 +21,6 @@ process.argv = [process.argv[0], process.argv[1], ...rawArgs];
 const command = rawArgs[0];
 
 if (command === "--version" || command === "-v") {
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  const pkg = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   console.log(`flex-ax ${pkg.version}`);
   process.exit(0);
 }
