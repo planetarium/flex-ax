@@ -155,8 +155,14 @@ export async function maybeAutoUpdate(originalArgs: string[]): Promise<void> {
   }
   if (result.signal) {
     // 자식이 시그널로 종료된 경우 동일 시그널로 자기 자신을 종료해
-    // 호출자가 정확한 종료 사유를 알 수 있도록 한다.
-    process.kill(process.pid, result.signal);
+    // 호출자가 정확한 종료 사유를 알 수 있도록 한다. Windows 등 일부
+    // 플랫폼에서는 미지원 시그널이 ERR_UNKNOWN_SIGNAL을 던질 수 있으므로
+    // 그때는 조용히 exit 1로 떨어진다.
+    try {
+      process.kill(process.pid, result.signal);
+    } catch {
+      // ignore — 아래 process.exit으로 fallback
+    }
     process.exit(1);
   }
   process.exit(result.status ?? 1);
