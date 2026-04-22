@@ -1,16 +1,11 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import semver from "semver";
 
-import {
-  downloadAndInstall,
-  getCurrentVersion,
-  getLatestVersion,
-} from "./commands/update.js";
+import { getCurrentVersion, getLatestVersion } from "./commands/update.js";
 
 export const SUCCESS_TTL_MS = 6 * 60 * 60 * 1000;
 export const FAILURE_TTL_MS = 30 * 60 * 1000;
@@ -122,64 +117,17 @@ export async function maybeAutoUpdate(originalArgs: string[]): Promise<void> {
   // 로컬 빌드/프리릴리스로 current가 더 높을 수 있으므로 다운그레이드는 skip.
   if (compareVersions(latest, current) <= 0) return;
 
-  if (isCi() || !isInteractive()) {
-    console.error(
-      `[FLEX-AX] 새 버전 ${latest} 사용 가능 (현재 ${current}). \`flex-ax update\` 로 업데이트하세요.`,
-    );
-    return;
-  }
-
+  // flex-ax는 다음 릴리스부터 bun compile 기반 standalone 바이너리로 배포
+  // 방식을 전환한다. npm pack tarball을 덮어쓰는 기존 자동 업데이트는 새
+  // 포맷을 로드할 수 없어 브릭을 유발할 수 있으므로, 여기서는 알림만 출력하고
+  // 실제 교체는 사용자가 한 번만 수동으로 수행하도록 안내한다.
   console.error(
-    `[FLEX-AX] 새 버전 감지: ${current} → ${latest}, 자동 업데이트 후 재실행합니다.`,
+    `[FLEX-AX] 새 버전 ${latest} 사용 가능 (현재 ${current}).`,
   );
   console.error(
-    `[FLEX-AX] 자동 업데이트를 끄려면 FLEX_AX_AUTO_UPDATE=false 환경변수를 설정하세요.`,
+    `[FLEX-AX] flex-ax는 standalone 바이너리 배포로 전환됩니다. npm 자동 업데이트는 중단되었습니다.`,
   );
-
-  try {
-    await downloadAndInstall(latest);
-  } catch (err) {
-    console.error(
-      `[FLEX-AX] 자동 업데이트 실패, 기존 버전으로 진행합니다: ${err instanceof Error ? err.message : err}`,
-    );
-    // 같은 latest를 계속 잡고 매 호출마다 다운로드/설치를 재시도하면
-    // 네트워크나 권한 문제가 지속될 때 에러 로그가 6시간 동안 반복된다.
-    // 실패 캐시(FAILURE_TTL)로 전환해 최소 30분은 조용하도록 둔다.
-    await writeCache({ checkedAt: Date.now() }).catch(() => {});
-    return;
-  }
-
-  const result = spawnSync(process.execPath, [process.argv[1]!, ...originalArgs], {
-    stdio: "inherit",
-    env: { ...process.env, [REENTRY_GUARD_ENV]: "1" },
-  });
-
-  if (result.error) {
-    console.error(
-      `[FLEX-AX] 자동 업데이트 후 재실행 실패: ${result.error.message}`,
-    );
-    process.exit(1);
-  }
-  if (result.signal) {
-    // 자식이 시그널로 종료된 경우 동일 시그널로 자기 자신을 종료해
-    // 호출자가 정확한 종료 사유를 알 수 있도록 한다. Windows 등 일부
-    // 플랫폼에서는 미지원 시그널이 ERR_UNKNOWN_SIGNAL을 던질 수 있으므로
-    // 그때는 조용히 exit 1로 떨어진다.
-    let signalSent = false;
-    try {
-      process.kill(process.pid, result.signal);
-      signalSent = true;
-    } catch {
-      // ignore — 아래 process.exit으로 fallback
-    }
-    if (signalSent) {
-      // 시그널이 즉시 도착하지 않을 수 있으므로 잠깐 대기. 이벤트 루프가
-      // 비어 있으면 unref로 끝나도 process가 자연 종료되지 않으니, 이 경우
-      // 100ms 후 fallback으로 exit 1.
-      setTimeout(() => process.exit(1), 100).unref();
-      return;
-    }
-    process.exit(1);
-  }
-  process.exit(result.status ?? 1);
+  console.error(
+    `[FLEX-AX] 최신 바이너리: https://github.com/planetarium/flex-ax/releases/latest`,
+  );
 }

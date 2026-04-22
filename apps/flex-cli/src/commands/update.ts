@@ -1,9 +1,6 @@
-import { createWriteStream } from "node:fs";
-import { rename, rm, mkdir, readFile } from "node:fs/promises";
-import { execSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { pipeline } from "node:stream/promises";
 
 const REPO = "planetarium/flex-ax";
 const RELEASE_URL = `https://github.com/${REPO}/releases`;
@@ -28,73 +25,17 @@ export async function getLatestVersion(signal?: AbortSignal): Promise<string> {
   return version;
 }
 
-export async function downloadAndInstall(version: string): Promise<void> {
-  const tgzName = `flex-ax-${version}.tgz`;
-  const downloadUrl = `${RELEASE_URL}/download/flex-cli@${version}/${tgzName}`;
-
-  console.log(`[FLEX-AX:UPDATE] 다운로드 중: ${downloadUrl}`);
-  const res = await fetch(downloadUrl);
-  if (!res.ok || !res.body) {
-    throw new Error(`다운로드 실패: ${res.status} ${res.statusText}`);
-  }
-
-  // npm pack tarball 구조: package/ 아래에 파일이 들어있음
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const packageRoot = path.resolve(__dirname, "../..");
-  const tmpDir = path.join(packageRoot, ".update-tmp");
-
-  await rm(tmpDir, { recursive: true, force: true });
-  await mkdir(tmpDir, { recursive: true });
-
-  const tgzPath = path.join(tmpDir, tgzName);
-
-  // 다운로드
-  const fileStream = createWriteStream(tgzPath);
-  // @ts-expect-error ReadableStream to NodeJS stream
-  await pipeline(res.body, fileStream);
-
-  // 압축 해제
-  console.log("[FLEX-AX:UPDATE] 압축 해제 중...");
-  execSync(`tar -xzf ${JSON.stringify(tgzPath)} -C ${JSON.stringify(tmpDir)}`);
-
-  // package/ 내용물을 패키지 루트로 복사
-  const extractedDir = path.join(tmpDir, "package");
-
-  // dist/ 교체
-  const distTarget = path.join(packageRoot, "dist");
-  await rm(distTarget, { recursive: true, force: true });
-  await rename(path.join(extractedDir, "dist"), distTarget);
-
-  // package.json 교체
-  await rename(
-    path.join(extractedDir, "package.json"),
-    path.join(packageRoot, "package.json"),
-  );
-
-  // 정리
-  await rm(tmpDir, { recursive: true, force: true });
-}
-
 export async function runUpdate(): Promise<void> {
-  try {
-    const current = await getCurrentVersion();
-    console.log(`[FLEX-AX:UPDATE] 현재 버전: ${current}`);
-
-    const latest = await getLatestVersion();
-    console.log(`[FLEX-AX:UPDATE] 최신 버전: ${latest}`);
-
-    if (current === latest) {
-      console.log("[FLEX-AX:UPDATE] 이미 최신 버전입니다.");
-      return;
-    }
-
-    console.log(`[FLEX-AX:UPDATE] ${current} → ${latest} 업데이트 시작`);
-    await downloadAndInstall(latest);
-    console.log(`[FLEX-AX:UPDATE] ${latest} 업데이트 완료!`);
-  } catch (err) {
-    console.error(
-      `[FLEX-AX:ERROR] 업데이트 실패: ${err instanceof Error ? err.message : err}`,
-    );
-    process.exit(1);
-  }
+  const current = await getCurrentVersion().catch(() => "unknown");
+  console.log(`[FLEX-AX:UPDATE] 현재 버전: ${current}`);
+  console.log(
+    `[FLEX-AX:UPDATE] flex-ax는 standalone 바이너리 배포로 전환됩니다.`,
+  );
+  console.log(
+    `[FLEX-AX:UPDATE] npm 기반 자동 업데이트는 더 이상 지원되지 않습니다.`,
+  );
+  console.log(
+    `[FLEX-AX:UPDATE] 최신 바이너리를 직접 내려받아 주세요:`,
+  );
+  console.log(`  https://github.com/planetarium/flex-ax/releases/latest`);
 }
