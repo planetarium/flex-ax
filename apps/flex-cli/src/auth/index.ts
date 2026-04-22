@@ -402,6 +402,25 @@ export async function switchCustomer(
       path: "/",
     },
   ]);
+
+  // authHeaders["cookie"]에 박힌 AID도 동기화한다.
+  // page.request.*처럼 headers를 명시적으로 넘겨 호출하는 경로(예: 첨부 다운로드의
+  // processAttachments)에서는 전달된 Cookie 헤더가 그대로 쓰이므로, 여기를 갱신하지
+  // 않으면 쿠키 jar는 새 AID지만 Cookie 헤더는 원래 법인의 AID를 싣는 불일치가 생긴다.
+  const existingCookie = authCtx.authHeaders["cookie"];
+  if (existingCookie !== undefined) {
+    const parts = existingCookie.split(";").map((p) => p.trim()).filter(Boolean);
+    let replaced = false;
+    const next = parts.map((p) => {
+      if (p.startsWith("AID=")) {
+        replaced = true;
+        return `AID=${result.token}`;
+      }
+      return p;
+    });
+    if (!replaced) next.push(`AID=${result.token}`);
+    authCtx.authHeaders["cookie"] = next.join("; ");
+  }
 }
 
 /**
