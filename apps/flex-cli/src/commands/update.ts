@@ -8,16 +8,16 @@ import { pipeline } from "node:stream/promises";
 const REPO = "planetarium/flex-ax";
 const RELEASE_URL = `https://github.com/${REPO}/releases`;
 
-async function getCurrentVersion(): Promise<string> {
+export async function getCurrentVersion(): Promise<string> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const pkgPath = path.resolve(__dirname, "../../package.json");
   const pkg = JSON.parse(await readFile(pkgPath, "utf-8"));
   return pkg.version;
 }
 
-async function getLatestVersion(): Promise<string> {
+export async function getLatestVersion(signal?: AbortSignal): Promise<string> {
   // GitHub redirects /releases/latest to /releases/tag/<tag>
-  const res = await fetch(`${RELEASE_URL}/latest`, { redirect: "manual" });
+  const res = await fetch(`${RELEASE_URL}/latest`, { redirect: "manual", signal });
   const location = res.headers.get("location");
   if (!location) {
     throw new Error("최신 릴리스를 찾을 수 없습니다.");
@@ -28,7 +28,7 @@ async function getLatestVersion(): Promise<string> {
   return version;
 }
 
-async function downloadAndInstall(version: string): Promise<void> {
+export async function downloadAndInstall(version: string): Promise<void> {
   const tgzName = `flex-ax-${version}.tgz`;
   const downloadUrl = `${RELEASE_URL}/download/flex-cli@${version}/${tgzName}`;
 

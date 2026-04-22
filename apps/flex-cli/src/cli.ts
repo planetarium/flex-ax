@@ -2,6 +2,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
+// 자동 업데이트 시 재실행할 원본 인자 보존
+const originalArgs = process.argv.slice(2);
+
 // --auth <mode> 플래그 파싱 (커맨드 앞뒤 어디든 가능)
 const rawArgs = process.argv.slice(2);
 const authIdx = rawArgs.indexOf("--auth");
@@ -27,6 +30,12 @@ if (command === "--version" || command === "-v") {
 }
 
 await import("dotenv/config");
+
+// update/help 외 명령에 대해 새 버전 감지 → 자동 설치 → 재실행
+if (command && command !== "update" && command !== "help") {
+  const { maybeAutoUpdate } = await import("./auto-update.js");
+  await maybeAutoUpdate(originalArgs);
+}
 
 switch (command) {
   case "discover": {
@@ -89,6 +98,9 @@ Commands:
 
 Options:
   --auth <mode>   인증 모드: credentials | sso | playwriter
-  --version, -v   버전 출력`);
+  --version, -v   버전 출력
+
+Env:
+  FLEX_AX_AUTO_UPDATE=false   기동 시 자동 업데이트 비활성화`);
     process.exit(command === "help" ? 0 : 1);
 }
