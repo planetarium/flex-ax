@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import {
   downloadAndInstall,
@@ -59,8 +60,12 @@ function isInteractive(): boolean {
 }
 
 function isInstalledRun(): boolean {
-  const entry = process.argv[1];
-  return typeof entry === "string" && entry.endsWith(path.join("dist", "cli.js"));
+  // npm/pnpm bin shim과 symlink는 process.argv[1]를 .../.bin/flex-ax 같이
+  // 만들어 dist/cli.js와 매칭되지 않는 경우가 있다. 이 모듈 자체의 위치를
+  // 보면 빌드된 dist에서 import된 경로(또는 tsx의 src/.ts)가 그대로 드러나므로
+  // 설치 실행과 dev 실행을 안정적으로 구분할 수 있다.
+  const here = fileURLToPath(import.meta.url);
+  return here.endsWith(path.join("dist", "auto-update.js"));
 }
 
 export function compareVersions(a: string, b: string): number {
