@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   FAILURE_TTL_MS,
   SUCCESS_TTL_MS,
+  compareVersions,
   isCacheFresh,
   isCi,
   isOptedOut,
@@ -61,5 +62,30 @@ describe("isCacheFresh", () => {
 
   it("FAILURE_TTL is shorter than SUCCESS_TTL", () => {
     assert.ok(FAILURE_TTL_MS < SUCCESS_TTL_MS);
+  });
+});
+
+describe("compareVersions", () => {
+  it("returns 0 for equal versions", () => {
+    assert.equal(compareVersions("0.5.4", "0.5.4"), 0);
+  });
+
+  it("returns negative when a < b (patch)", () => {
+    assert.ok(compareVersions("0.5.3", "0.5.4") < 0);
+  });
+
+  it("returns positive when a > b (minor and major)", () => {
+    assert.ok(compareVersions("0.6.0", "0.5.4") > 0);
+    assert.ok(compareVersions("1.0.0", "0.99.99") > 0);
+  });
+
+  it("treats prerelease suffix as the base version", () => {
+    assert.equal(compareVersions("0.5.4-rc1", "0.5.4"), 0);
+  });
+
+  it("supports the downgrade-skip predicate (latest <= current)", () => {
+    assert.ok(compareVersions("0.5.0", "0.5.4") <= 0); // remote stale → skip
+    assert.ok(compareVersions("0.5.4", "0.5.4") <= 0); // already latest → skip
+    assert.ok(compareVersions("0.6.0", "0.5.4") > 0); // upgrade available
   });
 });

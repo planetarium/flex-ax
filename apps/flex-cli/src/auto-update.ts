@@ -60,7 +60,17 @@ function isInteractive(): boolean {
 
 function isInstalledRun(): boolean {
   const entry = process.argv[1];
-  return typeof entry === "string" && entry.endsWith("dist/cli.js");
+  return typeof entry === "string" && entry.endsWith(path.join("dist", "cli.js"));
+}
+
+export function compareVersions(a: string, b: string): number {
+  const parse = (v: string) =>
+    v.split("-")[0].split(".").map((n) => Number.parseInt(n, 10) || 0);
+  const [a1 = 0, a2 = 0, a3 = 0] = parse(a);
+  const [b1 = 0, b2 = 0, b3 = 0] = parse(b);
+  if (a1 !== b1) return a1 - b1;
+  if (a2 !== b2) return a2 - b2;
+  return a3 - b3;
 }
 
 async function fetchLatestWithTimeout(): Promise<string | null> {
@@ -101,7 +111,8 @@ export async function maybeAutoUpdate(originalArgs: string[]): Promise<void> {
   }
   if (!latest) return;
 
-  if (current === latest) return;
+  // 로컬 빌드/프리릴리스로 current가 더 높을 수 있으므로 다운그레이드는 skip.
+  if (compareVersions(latest, current) <= 0) return;
 
   if (isCi() || !isInteractive()) {
     console.error(
