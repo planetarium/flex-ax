@@ -87,6 +87,7 @@ export async function importCustomerToFlexHr({
   const sqlite = new Database(dbPath, { readonly: true });
   const client = new pg.Client({ connectionString: config.databaseUrl });
   let storage: ReturnType<typeof createFlexHrStorage> | null = null;
+  let importError: Error | null = null;
   try {
     await client.connect();
     storage = createFlexHrStorage(config);
@@ -174,7 +175,14 @@ export async function importCustomerToFlexHr({
     await client.query(
       `INSERT INTO workspaces (id, owner_wallet, name, slug, business_number, address, phone)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = now()`,
+       ON CONFLICT (id) DO UPDATE SET
+         owner_wallet = EXCLUDED.owner_wallet,
+         name = EXCLUDED.name,
+         slug = EXCLUDED.slug,
+         business_number = EXCLUDED.business_number,
+         address = EXCLUDED.address,
+         phone = EXCLUDED.phone,
+         updated_at = now()`,
       [
         customerIdHash,
         config.flexHrOwnerWallet,
@@ -495,14 +503,29 @@ export async function importCustomerToFlexHr({
         filesFailed: counters.filesFailed,
       });
     } catch (error) {
+      importError = error instanceof Error ? error : new Error(String(error));
       if (!metadataCommitted) {
         await client.query("ROLLBACK").catch(() => undefined);
       }
-      throw error;
+      throw importError;
     }
   } finally {
-    sqlite.close();
-    await client.end();
+    let cleanupError: Error | null = null;
+    try {
+      sqlite.close();
+    } catch (error) {
+      cleanupError = error instanceof Error ? error : new Error(String(error));
+    }
+    try {
+      await client.end();
+    } catch (error) {
+      if (!cleanupError) {
+        cleanupError = error instanceof Error ? error : new Error(String(error));
+      }
+    }
+    if (cleanupError && !importError) {
+      throw cleanupError;
+    }
   }
 }
 
@@ -528,11 +551,12 @@ async function validateStorageDryRun(
   customerIdHash: string,
   logger: Logger,
 ): Promise<void> {
-  const probeKey = `${customerIdHash}/__dry_run_probe__/${Date.now()}`;
+  const probeKey = `${customerIdHash}/__dry_run_probe__`;
   await storage.put(probeKey, Buffer.from("dry-run"), {
     contentType: "text/plain",
     contentLength: Buffer.byteLength("dry-run"),
   });
+  await storage.delete(probeKey).catch(() => undefined);
   logger.info("flex-hr storage dry-run 검증 완료", {
     customerIdHash,
     storageBackend: storage.backend,

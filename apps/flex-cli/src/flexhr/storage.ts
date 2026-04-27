@@ -2,7 +2,12 @@ import { promises as fs, createWriteStream } from "node:fs";
 import path from "node:path";
 import { Readable, pipeline } from "node:stream";
 import { promisify } from "node:util";
-import { HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import type { Config } from "../config/index.js";
 
 const pipelineP = promisify(pipeline);
@@ -24,6 +29,7 @@ export interface FlexHrStorage {
   backend: "local" | "r2";
   put(key: string, body: PutBody, opts?: PutOptions): Promise<void>;
   head(key: string): Promise<HeadResult>;
+  delete(key: string): Promise<void>;
 }
 
 function createR2Storage(config: Config): FlexHrStorage {
@@ -78,6 +84,11 @@ function createR2Storage(config: Config): FlexHrStorage {
         throw error;
       }
     },
+    async delete(key) {
+      await client.send(
+        new DeleteObjectCommand({ Bucket: config.r2Bucket, Key: key }),
+      );
+    },
   };
 }
 
@@ -115,6 +126,16 @@ function createLocalStorage(root: string): FlexHrStorage {
       } catch (error) {
         if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
           return { exists: false };
+        }
+        throw error;
+      }
+    },
+    async delete(key) {
+      try {
+        await fs.unlink(resolveKey(key));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+          return;
         }
         throw error;
       }
