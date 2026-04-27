@@ -27,6 +27,7 @@ interface DirectDumpContext {
   enabled: boolean;
   baseDir: string | null;
   keepScratch: boolean;
+  autoCreatedBaseDir: boolean;
 }
 
 export async function runCrawl(): Promise<void> {
@@ -148,7 +149,13 @@ export async function runCrawl(): Promise<void> {
     await cleanup(authCtx);
   }
 
-  if (directDump.enabled && directDump.baseDir && !directDump.keepScratch && allErrors.length === 0) {
+  if (
+    directDump.enabled &&
+    directDump.baseDir &&
+    directDump.autoCreatedBaseDir &&
+    !directDump.keepScratch &&
+    allErrors.length === 0
+  ) {
     await rm(directDump.baseDir, { recursive: true, force: true }).catch(() => undefined);
   }
 
@@ -258,7 +265,7 @@ async function runCrawlForCustomer(
           config,
           logger,
         });
-        if (directDump.baseDir && !directDump.keepScratch) {
+        if (directDump.baseDir && directDump.autoCreatedBaseDir && !directDump.keepScratch) {
           await rm(customerOutputDir, { recursive: true, force: true }).catch(() => undefined);
         }
       } catch (error) {
@@ -283,18 +290,18 @@ async function runCrawlForCustomer(
 
 function createDirectDumpContext(config: Config): DirectDumpContext {
   if (!config.flexHrDirectDump) {
-    return { enabled: false, baseDir: null, keepScratch: true };
+    return { enabled: false, baseDir: null, keepScratch: true, autoCreatedBaseDir: false };
   }
-
-  const configuredBase =
-    config.flexHrScratchRoot.trim().length > 0
-      ? path.resolve(config.flexHrScratchRoot)
-      : path.join(os.tmpdir(), `flex-ax-flex-hr-dump-${Date.now()}`);
+  const timestampedDir = `flex-ax-flex-hr-dump-${Date.now()}`;
+  const configuredBase = config.flexHrScratchRoot.trim().length > 0
+    ? path.join(path.resolve(config.flexHrScratchRoot), timestampedDir)
+    : path.join(os.tmpdir(), timestampedDir);
 
   return {
     enabled: true,
     baseDir: configuredBase,
     keepScratch: config.flexHrKeepScratch,
+    autoCreatedBaseDir: true,
   };
 }
 

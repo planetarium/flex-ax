@@ -86,57 +86,58 @@ export async function importCustomerToFlexHr({
   const dbPath = path.join(sourceDir, "flex-ax.db");
   const sqlite = new Database(dbPath, { readonly: true });
   const client = new pg.Client({ connectionString: config.databaseUrl });
-  await client.connect();
-
-  const storage = createFlexHrStorage(config);
-  if (config.flexHrImportDryRun) {
-    await validateStorageDryRun(storage, customerIdHash, logger);
-  }
-
-  let report: CrawlReport | null = null;
+  let storage: ReturnType<typeof createFlexHrStorage> | null = null;
   try {
-    report = JSON.parse(await readFile(path.join(sourceDir, "crawl-report.json"), "utf-8")) as CrawlReport;
-  } catch {
-    report = null;
-  }
-
-  const counters = {
-    workspacesInserted: 0,
-    workspacesExisting: 0,
-    membersInserted: 0,
-    membersExisting: 0,
-    employeesInserted: 0,
-    employeesExisting: 0,
-    botInserted: 0,
-    botExisting: 0,
-    formsInserted: 0,
-    formsExisting: 0,
-    approvalsInserted: 0,
-    approvalsExisting: 0,
-    filesConsidered: 0,
-    filesSkipped: 0,
-    filesFailed: 0,
-    filesR2Uploaded: 0,
-    filesR2Existing: 0,
-    filesDbInserted: 0,
-    filesDbExisting: 0,
-  };
-
-  const bump = (
-    result: pg.QueryResult,
-    insertedCounter: keyof typeof counters,
-    existingCounter: keyof typeof counters,
-  ): void => {
-    if (result.rowCount && result.rowCount > 0) {
-      counters[insertedCounter]++;
-    } else {
-      counters[existingCounter]++;
+    await client.connect();
+    storage = createFlexHrStorage(config);
+    if (config.flexHrImportDryRun) {
+      await validateStorageDryRun(storage, customerIdHash, logger);
     }
-  };
 
-  let metadataCommitted = false;
-  try {
-    await client.query("BEGIN");
+    let report: CrawlReport | null = null;
+    try {
+      report = JSON.parse(await readFile(path.join(sourceDir, "crawl-report.json"), "utf-8")) as CrawlReport;
+    } catch {
+      report = null;
+    }
+
+    const counters = {
+      workspacesInserted: 0,
+      workspacesExisting: 0,
+      membersInserted: 0,
+      membersExisting: 0,
+      employeesInserted: 0,
+      employeesExisting: 0,
+      botInserted: 0,
+      botExisting: 0,
+      formsInserted: 0,
+      formsExisting: 0,
+      approvalsInserted: 0,
+      approvalsExisting: 0,
+      filesConsidered: 0,
+      filesSkipped: 0,
+      filesFailed: 0,
+      filesR2Uploaded: 0,
+      filesR2Existing: 0,
+      filesDbInserted: 0,
+      filesDbExisting: 0,
+    };
+
+    const bump = (
+      result: pg.QueryResult,
+      insertedCounter: keyof typeof counters,
+      existingCounter: keyof typeof counters,
+    ): void => {
+      if (result.rowCount && result.rowCount > 0) {
+        counters[insertedCounter]++;
+      } else {
+        counters[existingCounter]++;
+      }
+    };
+
+    let metadataCommitted = false;
+    try {
+      await client.query("BEGIN");
 
     await client.query(
       `INSERT INTO accounts (wallet_address, display_name) VALUES ($1, NULL)
@@ -357,6 +358,7 @@ export async function importCustomerToFlexHr({
       });
       return;
     }
+    const activeStorage = storage;
 
     const fileRows = sqlite
       .prepare(
@@ -371,7 +373,8 @@ export async function importCustomerToFlexHr({
     const deriveInstanceId = (row: FileRow): string | null => {
       if (row.instance_id) return row.instance_id;
       if (!row.local_path) return null;
-      const match = row.local_path.match(/(?:^|\/)attachments\/([^/]+)\//);
+      const normalizedLocalPath = normalizeLocalPath(row.local_path);
+      const match = normalizedLocalPath.match(/(?:^|\/)attachments\/([^/]+)\//);
       if (match && instanceIds.has(match[1])) return match[1];
       return null;
     };
@@ -408,7 +411,8 @@ export async function importCustomerToFlexHr({
             return null;
           }
 
-          const match = file.local_path.match(/(?:^|\/)(attachments|templates|instances)\/(.+)$/);
+          const normalizedLocalPath = normalizeLocalPath(file.local_path);
+          const match = normalizedLocalPath.match(/(?:^|\/)(attachments|templates|instances)\/(.+)$/);
           if (!match) {
             throw new Error(`local_path outside known subdirs: ${file.local_path}`);
           }
@@ -422,14 +426,14 @@ export async function importCustomerToFlexHr({
           let fileSize = file.file_size ?? 0;
           const mime = guessMime(file.file_name, file.mime_type);
 
-          const head = await storage.head(storageKey);
+          const head = await activeStorage.head(storageKey);
           if (head.exists) {
             fileSize = head.size ?? fileSize;
             counters.filesR2Existing++;
           } else {
             const fileStat = await stat(absolutePath);
             fileSize = fileStat.size;
-            await storage.put(storageKey, createReadStream(absolutePath), {
+            await activeStorage.put(storageKey, createReadStream(absolutePath), {
               contentType: mime,
               contentLength: fileSize,
             });
@@ -481,20 +485,21 @@ export async function importCustomerToFlexHr({
       }
     }
 
-    logger.info("flex-hr direct dump 완료", {
-      customerIdHash,
-      workspaceName,
-      templates: report?.templates?.totalCount ?? templates.length,
-      instances: report?.instances?.totalCount ?? instances.length,
-      filesUploaded: counters.filesR2Uploaded,
-      filesExisting: counters.filesR2Existing,
-      filesFailed: counters.filesFailed,
-    });
-  } catch (error) {
-    if (!metadataCommitted) {
-      await client.query("ROLLBACK").catch(() => undefined);
+      logger.info("flex-hr direct dump 완료", {
+        customerIdHash,
+        workspaceName,
+        templates: report?.templates?.totalCount ?? templates.length,
+        instances: report?.instances?.totalCount ?? instances.length,
+        filesUploaded: counters.filesR2Uploaded,
+        filesExisting: counters.filesR2Existing,
+        filesFailed: counters.filesFailed,
+      });
+    } catch (error) {
+      if (!metadataCommitted) {
+        await client.query("ROLLBACK").catch(() => undefined);
+      }
+      throw error;
     }
-    throw error;
   } finally {
     sqlite.close();
     await client.end();
@@ -524,12 +529,19 @@ async function validateStorageDryRun(
   logger: Logger,
 ): Promise<void> {
   const probeKey = `${customerIdHash}/__dry_run_probe__/${Date.now()}`;
-  await storage.head(probeKey);
+  await storage.put(probeKey, Buffer.from("dry-run"), {
+    contentType: "text/plain",
+    contentLength: Buffer.byteLength("dry-run"),
+  });
   logger.info("flex-hr storage dry-run 검증 완료", {
     customerIdHash,
     storageBackend: storage.backend,
     probe: probeKey,
   });
+}
+
+function normalizeLocalPath(localPath: string): string {
+  return path.posix.normalize(localPath.replace(/\\+/g, "/"));
 }
 
 function mapApprovalStatus(status: string | null): string {
