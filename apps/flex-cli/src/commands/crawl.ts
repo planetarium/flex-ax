@@ -1,4 +1,6 @@
 import path from "node:path";
+import os from "node:os";
+import { rm } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
 import { loadConfig, type Config } from "../config/index.js";
 import { createLogger, type Logger } from "../logger/index.js";
@@ -18,6 +20,14 @@ import { crawlAttendanceApprovals } from "../crawlers/attendance.js";
 import { crawlCatalogEndpoints } from "../crawlers/catalog-endpoints.js";
 import type { CrawlError } from "../types/common.js";
 import type { CrawlResult } from "../crawlers/shared.js";
+import { importToSqlite } from "../db/import.js";
+import { importCustomerToFlexHr } from "../flexhr/import.js";
+
+interface DirectDumpContext {
+  enabled: boolean;
+  baseDir: string | null;
+  keepScratch: boolean;
+}
 
 export async function runCrawl(): Promise<void> {
   const logger = createLogger("CRAWL");
@@ -86,6 +96,15 @@ export async function runCrawl(): Promise<void> {
     process.exit(1);
   }
 
+  const directDump = createDirectDumpContext(config);
+  if (directDump.enabled) {
+    logger.info("flex-hr direct dump 모드 활성화", {
+      scratchRoot: directDump.baseDir,
+      dryRun: config.flexHrImportDryRun,
+      storageBackend: config.storageBackend,
+    });
+  }
+
   logger.info("법인별 크롤링 시작", {
     count: corporations.length,
     names: corporations.map((c) => c.name),
@@ -122,11 +141,15 @@ export async function runCrawl(): Promise<void> {
         continue;
       }
 
-      const errors = await runCrawlForCustomer(authCtx, config, catalog, corp, logger);
+      const errors = await runCrawlForCustomer(authCtx, config, catalog, corp, logger, directDump);
       allErrors.push(...errors);
     }
   } finally {
     await cleanup(authCtx);
+  }
+
+  if (directDump.enabled && directDump.baseDir && !directDump.keepScratch && allErrors.length === 0) {
+    await rm(directDump.baseDir, { recursive: true, force: true }).catch(() => undefined);
   }
 
   if (allErrors.length > 0) {
@@ -143,8 +166,9 @@ async function runCrawlForCustomer(
   catalog: ApiCatalog | null,
   corp: Corporation,
   logger: Logger,
+  directDump: DirectDumpContext,
 ): Promise<CrawlError[]> {
-  const customerOutputDir = path.join(config.outputDir, corp.customerIdHash);
+  const customerOutputDir = resolveCustomerOutputDir(config, corp.customerIdHash, directDump);
   const storage: StorageWriter = createStorageWriter(customerOutputDir, config.catalogPath);
 
   const startedAt = new Date().toISOString();
@@ -214,7 +238,75 @@ async function runCrawlForCustomer(
       `attendance=${attendanceResult.successCount}, endpoints=${catalogEndpointsResult.successCount}`,
   );
 
+  if (directDump.enabled) {
+    if (totalErrors.length > 0) {
+      logger.warn("크롤 오류가 있어 flex-hr direct dump를 스킵합니다", {
+        customerIdHash: corp.customerIdHash,
+        errors: totalErrors.length,
+      });
+    } else {
+      try {
+        const dbPath = path.join(customerOutputDir, "flex-ax.db");
+        logger.info("flex-hr direct dump 준비: SQLite 생성", {
+          customerIdHash: corp.customerIdHash,
+          dbPath,
+        });
+        await importToSqlite(customerOutputDir, dbPath, logger);
+        await importCustomerToFlexHr({
+          sourceDir: customerOutputDir,
+          customerIdHash: corp.customerIdHash,
+          config,
+          logger,
+        });
+        if (directDump.baseDir && !directDump.keepScratch) {
+          await rm(customerOutputDir, { recursive: true, force: true }).catch(() => undefined);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error("flex-hr direct dump 실패", {
+          customerIdHash: corp.customerIdHash,
+          outputDir: customerOutputDir,
+          error: message,
+        });
+        totalErrors.push({
+          target: `customer:${corp.customerIdHash}`,
+          phase: "flex-hr-direct-dump",
+          message,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+  }
+
   return totalErrors;
+}
+
+function createDirectDumpContext(config: Config): DirectDumpContext {
+  if (!config.flexHrDirectDump) {
+    return { enabled: false, baseDir: null, keepScratch: true };
+  }
+
+  const configuredBase =
+    config.flexHrScratchRoot.trim().length > 0
+      ? path.resolve(config.flexHrScratchRoot)
+      : path.join(os.tmpdir(), `flex-ax-flex-hr-dump-${Date.now()}`);
+
+  return {
+    enabled: true,
+    baseDir: configuredBase,
+    keepScratch: config.flexHrKeepScratch,
+  };
+}
+
+function resolveCustomerOutputDir(
+  config: Config,
+  customerIdHash: string,
+  directDump: DirectDumpContext,
+): string {
+  if (!directDump.enabled || !directDump.baseDir) {
+    return path.join(config.outputDir, customerIdHash);
+  }
+  return path.join(directDump.baseDir, customerIdHash);
 }
 
 /**

@@ -78,6 +78,7 @@ switch (command) {
 Commands:
   discover        API 디스커버리 → api-catalog.json 생성
   crawl           카탈로그 기반 크롤링 → output/ 저장
+                  env: FLEX_HR_DIRECT_DUMP=true 이면 flex-hr DB/스토리지까지 직접 적재
   import          크롤링 결과(JSON) → SQLite DB 변환
   query "SQL"     DB 쿼리 실행 → JSON 출력 (read-only)
                   --file <path>  SQL 파일 경로
