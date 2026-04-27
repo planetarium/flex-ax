@@ -118,8 +118,8 @@ export async function importCustomerToFlexHr({
       filesConsidered: 0,
       filesSkipped: 0,
       filesFailed: 0,
-      filesR2Uploaded: 0,
-      filesR2Existing: 0,
+      filesStorageUploaded: 0,
+      filesStorageExisting: 0,
       filesDbInserted: 0,
       filesDbExisting: 0,
     };
@@ -437,7 +437,7 @@ export async function importCustomerToFlexHr({
           const head = await activeStorage.head(storageKey);
           if (head.exists) {
             fileSize = head.size ?? fileSize;
-            counters.filesR2Existing++;
+            counters.filesStorageExisting++;
           } else {
             const fileStat = await stat(absolutePath);
             fileSize = fileStat.size;
@@ -445,7 +445,7 @@ export async function importCustomerToFlexHr({
               contentType: mime,
               contentLength: fileSize,
             });
-            counters.filesR2Uploaded++;
+            counters.filesStorageUploaded++;
           }
 
           const drafterId = file.instance_id ? instanceDrafter.get(file.instance_id) : null;
@@ -498,8 +498,8 @@ export async function importCustomerToFlexHr({
         workspaceName,
         templates: report?.templates?.totalCount ?? templates.length,
         instances: report?.instances?.totalCount ?? instances.length,
-        filesUploaded: counters.filesR2Uploaded,
-        filesExisting: counters.filesR2Existing,
+        filesUploaded: counters.filesStorageUploaded,
+        filesExisting: counters.filesStorageExisting,
         filesFailed: counters.filesFailed,
       });
     } catch (error) {
@@ -509,6 +509,9 @@ export async function importCustomerToFlexHr({
       }
       throw importError;
     }
+  } catch (error) {
+    importError = error instanceof Error ? error : new Error(String(error));
+    throw importError;
   } finally {
     let cleanupError: Error | null = null;
     try {
