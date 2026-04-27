@@ -54,7 +54,12 @@ function setupHeaderCapture(
       const reqHostname = new URL(url).hostname;
       if (reqHostname === baseHostname && (url.includes("/api/") || url.includes("/action/"))) {
         const headers = request.headers();
-        for (const key of ["authorization", "cookie", "x-csrf-token", "x-flex-aid", "x-flex-axios"]) {
+        // x-flex-aid는 switchCustomer가 전담 관리한다.
+        // 여기서 캡처하면 법인 전환 후에도 페이지의 백그라운드 요청이 원래 scope의
+        // JWT를 헤더로 실어오고, authHeaders["x-flex-aid"]를 원본 값으로 되돌려버린다.
+        // 그 결과 이후 모든 크롤 요청이 전환된 법인이 아닌 로그인 시점의 법인 scope으로
+        // 동작해 멀티-법인 크롤이 같은 데이터만 반복 수집하게 된다.
+        for (const key of ["authorization", "cookie", "x-csrf-token", "x-flex-axios"]) {
           if (headers[key]) {
             authHeaders[key] = headers[key];
           }
@@ -384,6 +389,38 @@ export async function switchCustomer(
   }
 
   authCtx.authHeaders["x-flex-aid"] = result.token;
+
+  // AID 쿠키 jar도 새 JWT로 갱신한다.
+  // credentials:"include" fetch는 쿠키 jar의 AID를 자동 첨부하므로, 어떤 이유로
+  // 요청에 명시적 x-flex-aid 헤더가 빠져도 쿠키 fallback이 올바른 법인 scope을
+  // 유지하게 된다 (defense-in-depth).
+  await authCtx.context.addCookies([
+    {
+      name: "AID",
+      value: result.token,
+      domain: new URL(baseUrl).hostname,
+      path: "/",
+    },
+  ]);
+
+  // authHeaders["cookie"]에 박힌 AID도 동기화한다.
+  // page.request.*처럼 headers를 명시적으로 넘겨 호출하는 경로(예: 첨부 다운로드의
+  // processAttachments)에서는 전달된 Cookie 헤더가 그대로 쓰이므로, 여기를 갱신하지
+  // 않으면 쿠키 jar는 새 AID지만 Cookie 헤더는 원래 법인의 AID를 싣는 불일치가 생긴다.
+  const existingCookie = authCtx.authHeaders["cookie"];
+  if (existingCookie !== undefined) {
+    const parts = existingCookie.split(";").map((p) => p.trim()).filter(Boolean);
+    let replaced = false;
+    const next = parts.map((p) => {
+      if (p.startsWith("AID=")) {
+        replaced = true;
+        return `AID=${result.token}`;
+      }
+      return p;
+    });
+    if (!replaced) next.push(`AID=${result.token}`);
+    authCtx.authHeaders["cookie"] = next.join("; ");
+  }
 }
 
 /**

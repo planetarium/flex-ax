@@ -1,6 +1,6 @@
 {
   "name": "flex-ax",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "flex HR SaaS AX CLI - discover, crawl, and manage flex data",
@@ -26,6 +26,7 @@
     "dotenv": "^16.4.7",
     "pg": "^8.20.0",
     "playwright": "^1.50.1",
+    "semver": "^7.7.4",
     "zod": "^3.24.2"
   },
   "engines": {
@@ -35,6 +36,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.13.5",
     "@types/pg": "^8.20.0",
+    "@types/semver": "^7.7.1",
     "rimraf": "^6.0.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"
