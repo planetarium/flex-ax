@@ -409,6 +409,7 @@ export async function importCustomerToFlexHr({
     }
 
     const sourceRoot = path.resolve(sourceDir);
+    const uploadFailures: string[] = [];
     const uploadOutcomes = await mapConcurrent(
       files,
       config.flexHrImportParallel,
@@ -458,10 +459,12 @@ export async function importCustomerToFlexHr({
           };
         } catch (error) {
           counters.filesFailed++;
+          const message = error instanceof Error ? error.message : String(error);
+          uploadFailures.push(`${file.file_key}: ${message}`);
           logger.error("파일 업로드 실패", {
             customerIdHash,
             fileKey: file.file_key,
-            error: error instanceof Error ? error.message : String(error),
+            error: message,
           });
           return null;
         }
@@ -493,15 +496,21 @@ export async function importCustomerToFlexHr({
       }
     }
 
-      logger.info("flex-hr direct dump 완료", {
-        customerIdHash,
-        workspaceName,
-        templates: report?.templates?.totalCount ?? templates.length,
-        instances: report?.instances?.totalCount ?? instances.length,
-        filesUploaded: counters.filesStorageUploaded,
-        filesExisting: counters.filesStorageExisting,
-        filesFailed: counters.filesFailed,
-      });
+    if (uploadFailures.length > 0) {
+      throw new Error(
+        `file upload phase failed for ${uploadFailures.length} file(s); first failure: ${uploadFailures[0]}`,
+      );
+    }
+
+    logger.info("flex-hr direct dump 완료", {
+      customerIdHash,
+      workspaceName,
+      templates: report?.templates?.totalCount ?? templates.length,
+      instances: report?.instances?.totalCount ?? instances.length,
+      filesUploaded: counters.filesStorageUploaded,
+      filesExisting: counters.filesStorageExisting,
+      filesFailed: counters.filesFailed,
+    });
     } catch (error) {
       importError = error instanceof Error ? error : new Error(String(error));
       if (!metadataCommitted) {
