@@ -1,16 +1,16 @@
-import pkg from "../package.json" with { type: "json" };
+import { FLEX_AX_VERSION } from "./version.js";
 
 const originalArgs = process.argv.slice(2);
 const command = originalArgs[0];
 
 if (command === "--version" || command === "-v") {
-  console.log(`flex-ax ${pkg.version}`);
+  console.log(`flex-ax ${FLEX_AX_VERSION}`);
   process.exit(0);
 }
 
 await import("dotenv/config");
 
-if (command && command !== "update" && command !== "help") {
+if (command && command !== "update" && command !== "help" && command !== "__self-update-helper") {
   const { maybeAutoUpdate } = await import("./auto-update.js");
   await maybeAutoUpdate(originalArgs);
 }
@@ -64,6 +64,11 @@ switch (command) {
   case "update": {
     const { runUpdate } = await import("./commands/update.js");
     await runUpdate();
+    break;
+  }
+  case "__self-update-helper": {
+    const { runSelfUpdateHelper } = await import("./commands/update.js");
+    await runSelfUpdateHelper();
     break;
   }
   default:
