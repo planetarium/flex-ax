@@ -30,6 +30,11 @@ switch (command) {
     await runLogout();
     break;
   }
+  case "status": {
+    const { runStatus } = await import("./commands/status.js");
+    await runStatus();
+    break;
+  }
   case "crawl": {
     const { runCrawl } = await import("./commands/crawl.js");
     await runCrawl();
@@ -74,7 +79,10 @@ switch (command) {
 Commands:
   login           이메일/비밀번호 등록 (이메일은 ~/.flex-ax/config.json,
                   비밀번호는 OS 키링; 검증 후 저장)
+                  비대화식: FLEX_EMAIL/FLEX_PASSWORD env 또는
+                  --password-stdin 으로 stdin 파이프 입력 가능
   logout          OS 키링에서 비밀번호 삭제 (글로벌 config의 이메일은 보존)
+  status          현재 등록 상태 표시 (비밀번호 값은 마스킹)
   crawl           카탈로그 기반 크롤링 → output/ 저장
   import          크롤링 결과(JSON) → SQLite DB 변환
   query "SQL"     DB 쿼리 실행 → JSON 출력 (read-only)
