@@ -13,3 +13,4 @@ out/
 workflow-docs/
 .claude/*
 !.claude/skills/
+bun-dist/
