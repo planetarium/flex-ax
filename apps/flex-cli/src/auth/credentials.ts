@@ -82,6 +82,27 @@ export function deleteFromKeyring(account: string): boolean {
   }
 }
 
+/** 화면에 보이는 한 줄 입력 (이메일 등 비-비밀 값용). */
+export function promptLine(prompt: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!process.stdin.isTTY) {
+      reject(new Error("TTY가 아니라 입력을 받을 수 없습니다."));
+      return;
+    }
+    import("node:readline/promises").then(async ({ createInterface }) => {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        const answer = await rl.question(prompt);
+        resolve(answer.trim());
+      } catch (err) {
+        reject(err);
+      } finally {
+        rl.close();
+      }
+    });
+  });
+}
+
 /**
  * TTY에서 비밀번호를 받아오되 입력은 화면에 표시하지 않는다.
  * raw 모드 + 데이터 콜백으로 직접 처리 — 외부 의존 없이 readline만으로는 hide가 어렵다.

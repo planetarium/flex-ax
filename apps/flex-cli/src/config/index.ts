@@ -1,7 +1,13 @@
 import { z } from "zod";
+import { loadGlobalConfig } from "./global-config.js";
 
 const configSchema = z.object({
-  flexEmail: z.string().min(1, "FLEX_EMAIL is required"),
+  /**
+   * env(FLEX_EMAIL)에 직접 있으면 우선. 비어있으면 ~/.flex-ax/config.json 의 email 사용.
+   * 둘 다 비면 빈 문자열 — authenticate에서 명시적으로 에러 처리한다 (login 명령은 빈 값에서
+   * 프롬프트로 분기 가능해야 하므로 schema 레벨에서 강제하지 않는다).
+   */
+  flexEmail: z.string().default(""),
   /**
    * env에 비밀번호가 직접 들어있으면 우선 사용한다.
    * 비어있으면 OS 키링 → 대화형 프롬프트 순으로 fallback (auth/credentials.ts).
@@ -49,8 +55,9 @@ const configSchema = z.object({
 export type Config = z.infer<typeof configSchema>;
 
 export function loadConfig(): Config {
+  const global = loadGlobalConfig();
   return configSchema.parse({
-    flexEmail: process.env.FLEX_EMAIL,
+    flexEmail: process.env.FLEX_EMAIL || global.email || undefined,
     flexPassword: process.env.FLEX_PASSWORD,
     flexBaseUrl: process.env.FLEX_BASE_URL || undefined,
     outputDir: process.env.OUTPUT_DIR || undefined,

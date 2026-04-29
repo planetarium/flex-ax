@@ -1,11 +1,14 @@
 import { loadConfig } from "../config/index.js";
+import { saveGlobalConfig, getGlobalConfigPath } from "../config/global-config.js";
 import { createLogger } from "../logger/index.js";
 import { performLogin } from "../auth/index.js";
-import { promptPassword, saveToKeyring } from "../auth/credentials.js";
+import { promptLine, promptPassword, saveToKeyring } from "../auth/credentials.js";
 
 /**
- * 비밀번호를 입력받아 실제 로그인까지 통과하면 OS 키링에 저장한다.
- * 검증 없이 저장하면 오타가 그대로 들어가 다음 실행에서 401만 반복될 수 있다.
+ * 이메일 + 비밀번호를 입력받아 실제 5단계 로그인까지 통과하면
+ *   - 이메일은 `~/.flex-ax/config.json` (글로벌 config) 에
+ *   - 비밀번호는 OS 키링 (service=flex-ax, account=email) 에
+ * 저장한다. 검증 없이 저장하면 오타가 그대로 들어가 다음 실행에서 401만 반복된다.
  */
 export async function runLogin(): Promise<void> {
   const logger = createLogger("LOGIN");
@@ -14,7 +17,7 @@ export async function runLogin(): Promise<void> {
   try {
     config = loadConfig();
   } catch (error) {
-    logger.error("설정 로딩 실패 — FLEX_EMAIL이 필요합니다", {
+    logger.error("설정 로딩 실패", {
       error: error instanceof Error ? error.message : String(error),
     });
     process.exit(1);
@@ -25,22 +28,38 @@ export async function runLogin(): Promise<void> {
     process.exit(1);
   }
 
-  const password = await promptPassword(`[FLEX-AX:LOGIN] ${config.flexEmail} 비밀번호: `);
+  // 이메일: env > 글로벌 config > 프롬프트
+  let email = config.flexEmail;
+  let emailWasPrompted = false;
+  if (!email) {
+    email = await promptLine("[FLEX-AX:LOGIN] 이메일: ");
+    if (!email) {
+      logger.error("이메일 입력이 비어있습니다.");
+      process.exit(1);
+    }
+    emailWasPrompted = true;
+  }
+
+  const password = await promptPassword(`[FLEX-AX:LOGIN] ${email} 비밀번호: `);
   if (password.length === 0) {
     logger.error("비밀번호 입력이 비어있습니다.");
     process.exit(1);
   }
 
-  // 검증: 실제 5단계 로그인을 수행해 비밀번호가 유효한지 확인
   try {
-    await performLogin(config.flexBaseUrl, config.flexEmail, password, logger);
+    await performLogin(config.flexBaseUrl, email, password, logger);
   } catch (error) {
-    logger.error("로그인 검증 실패 — 키링에 저장하지 않았습니다", {
+    logger.error("로그인 검증 실패 — 키링/글로벌 config에 저장하지 않았습니다", {
       error: error instanceof Error ? error.message : String(error),
     });
     process.exit(1);
   }
 
-  saveToKeyring(config.flexEmail, password, logger);
+  // 검증 통과 후에만 저장한다.
+  if (emailWasPrompted) {
+    saveGlobalConfig({ email });
+    console.log(`[FLEX-AX:LOGIN] 이메일 저장: ${getGlobalConfigPath()}`);
+  }
+  saveToKeyring(email, password, logger);
   console.log(`[FLEX-AX:LOGIN] 완료 — 이후 crawl/check-apis 실행 시 자동으로 사용됩니다.`);
 }

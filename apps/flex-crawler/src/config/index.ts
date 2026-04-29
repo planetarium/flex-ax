@@ -1,8 +1,13 @@
 import "dotenv/config";
 import { z } from "zod";
+import { loadGlobalConfig } from "./global-config.js";
 
 const configSchema = z.object({
-  flexEmail: z.string().min(1, "FLEX_EMAIL is required"),
+  /**
+   * env(FLEX_EMAIL) 우선, 없으면 ~/.flex-ax/config.json 의 email.
+   * 둘 다 비면 authenticate에서 명시적으로 에러 처리.
+   */
+  flexEmail: z.string().default(""),
   /**
    * env에 비밀번호가 직접 들어있으면 우선 사용한다.
    * 비어있으면 OS 키링 → 대화형 프롬프트 순으로 fallback (auth/credentials.ts).
@@ -21,8 +26,9 @@ const configSchema = z.object({
 export type CrawlerConfig = z.infer<typeof configSchema>;
 
 export function loadConfig(): CrawlerConfig {
+  const global = loadGlobalConfig();
   return configSchema.parse({
-    flexEmail: process.env.FLEX_EMAIL,
+    flexEmail: process.env.FLEX_EMAIL || global.email || undefined,
     flexPassword: process.env.FLEX_PASSWORD,
     flexBaseUrl: process.env.FLEX_BASE_URL || undefined,
     outputDir: process.env.OUTPUT_DIR || undefined,

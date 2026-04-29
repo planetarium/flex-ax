@@ -65,7 +65,9 @@ async function getJson<T>(url: string, headers: Record<string, string>): Promise
 
 export async function authenticate(config: Config, logger: Logger): Promise<AuthContext> {
   if (!config.flexEmail) {
-    throw new Error("FLEX_EMAIL 환경 변수가 필요합니다.");
+    throw new Error(
+      "이메일을 찾을 수 없습니다. `flex-ax login`을 한 번 실행하거나 FLEX_EMAIL 환경 변수를 설정하세요.",
+    );
   }
 
   // 비밀번호: env > 키링 > 프롬프트 순으로 해석. config.flexPassword가 비어있을 때만
