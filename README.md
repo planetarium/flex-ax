@@ -36,3 +36,22 @@ bun run build:exe
 ```
 
 The compiled binary is written to `apps/flex-cli/bun-dist/`.
+
+## Migrating From Node-based Installs
+
+The official `flex-cli` release is now a standalone Bun executable instead of a Node-distributed package.
+
+If you are using an older Node-based install, reinstall once from the GitHub release assets for your platform:
+
+- Windows: download `flex-ax-windows-x64.exe`
+- macOS (Apple Silicon): download `flex-ax-darwin-arm64`
+- Linux (x64): download `flex-ax-linux-x64`
+
+After downloading:
+
+1. Stop any running `flex-ax` process.
+2. Replace your old `flex-ax` binary or shim with the downloaded executable.
+3. On macOS/Linux, make it executable with `chmod +x`.
+4. Run the new executable directly from its installed location.
+
+After this one-time reinstall, `flex-ax update` will use the standalone executable update path.
