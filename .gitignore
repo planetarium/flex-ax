@@ -12,3 +12,4 @@ coverage/
 out/
 workflow-docs/
 .claude/
+bun-dist/

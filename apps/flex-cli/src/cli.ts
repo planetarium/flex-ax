@@ -1,13 +1,9 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import pkg from "../package.json" with { type: "json" };
 
 const originalArgs = process.argv.slice(2);
 const command = originalArgs[0];
 
 if (command === "--version" || command === "-v") {
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  const pkg = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   console.log(`flex-ax ${pkg.version}`);
   process.exit(0);
 }

@@ -24,3 +24,15 @@ flex-ax/
 pnpm install
 pnpm dev
 ```
+
+## flex-cli Executable
+
+`apps/flex-cli` can be compiled into a standalone executable with Bun.
+
+```bash
+cd apps/flex-cli
+bun install
+bun run build:exe
+```
+
+The compiled binary is written to `apps/flex-cli/bun-dist/`.
