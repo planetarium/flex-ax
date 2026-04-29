@@ -4,7 +4,15 @@ import type { Logger } from "../logger/index.js";
 import type { StorageWriter } from "../storage/index.js";
 import type { ApiCatalog } from "../types/catalog.js";
 import type { WorkflowTemplate, TemplateField } from "../types/template.js";
-import { type CrawlResult, delay, emptyCrawlResult, nowISO, withRetry, flexFetch, resolveUrl } from "./shared.js";
+import {
+  type CrawlResult,
+  emptyCrawlResult,
+  nowISO,
+  withRetry,
+  flexFetch,
+  resolveUrl,
+  pooledMap,
+} from "./shared.js";
 
 export async function crawlTemplates(
   authCtx: AuthContext,
@@ -31,13 +39,11 @@ export async function crawlTemplates(
 
     const rawTemplates = data.templates ?? [];
     result.totalCount = rawTemplates.length;
-    logger.info(`양식 ${rawTemplates.length}건 발견`);
+    logger.info(`양식 ${rawTemplates.length}건 발견 (concurrency=${config.concurrency})`);
 
-    for (let i = 0; i < rawTemplates.length; i++) {
-      const raw = rawTemplates[i];
+    let processed = 0;
+    await pooledMap(rawTemplates, config.concurrency, async (raw) => {
       try {
-        logger.progress("양식 수집", i + 1, rawTemplates.length);
-
         const detailUrl = resolveUrl(
           config.flexBaseUrl, catalog, "template-detail",
           "/api/v3/approval-document-template/templates",
@@ -79,10 +85,11 @@ export async function crawlTemplates(
             error: saveError instanceof Error ? saveError.message : String(saveError),
           });
         }
+      } finally {
+        processed++;
+        logger.progress("양식 수집", processed, rawTemplates.length);
       }
-
-      if (i < rawTemplates.length - 1) await delay(config.requestDelayMs);
-    }
+    });
   } catch (error) {
     logger.error("양식 목록 수집 실패", {
       error: error instanceof Error ? error.message : String(error),

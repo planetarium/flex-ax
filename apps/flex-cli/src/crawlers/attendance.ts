@@ -132,7 +132,7 @@ export async function crawlAttendanceApprovals(
           });
         }
 
-        await delay(config.requestDelayMs);
+        if (config.requestDelayMs > 0) await delay(config.requestDelayMs);
       }
 
       if (data.hasNext) {
@@ -151,7 +151,7 @@ export async function crawlAttendanceApprovals(
         } else {
           continuationToken = nextContinuationToken;
           nextCursor = nextPageCursor;
-          await delay(config.requestDelayMs);
+          if (config.requestDelayMs > 0) await delay(config.requestDelayMs);
           pageNumber += 1;
         }
       } else {
