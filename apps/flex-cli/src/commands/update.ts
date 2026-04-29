@@ -1,5 +1,5 @@
 import { copyFile, createReadStream, createWriteStream, existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -306,6 +306,9 @@ async function replaceExecutable(payload: HelperPayload): Promise<void> {
     throw error;
   }
 
+  if (process.platform !== "win32") {
+    await chmod(payload.targetPath, 0o755);
+  }
   await ensureExecutableExists(payload.targetPath);
   await rm(backupPath, { force: true }).catch(() => {});
 }
