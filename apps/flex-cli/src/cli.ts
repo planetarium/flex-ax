@@ -51,6 +51,11 @@ switch (command) {
     await runFile();
     break;
   }
+  case "workflow": {
+    const { runWorkflow } = await import("./commands/workflow.js");
+    await runWorkflow();
+    break;
+  }
   case "check-apis": {
     const { runCheckApis } = await import("./commands/check-apis.js");
     await runCheckApis();
@@ -90,6 +95,7 @@ Commands:
                   --file <path>  SQL 파일 경로
                   --var key=value  {{key}} 플레이스홀더 치환 (반복 가능)
   file <fileKey>  파일 내용 출력 (--info로 메타데이터만)
+  workflow <sub>  결재 문서 작성/제출 (templates / describe / submit)
   check-apis      하드코딩된 API 엔드포인트 상태 확인
   install-skills  에이전트 스킬을 .claude/skills/에 설치
   update          최신 버전으로 업데이트
