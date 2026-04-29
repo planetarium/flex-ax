@@ -42,6 +42,28 @@ export async function paginatedFetch<T>(
   }
 }
 
+/** HTTP 응답 코드를 그대로 가지고 있는 에러 — 429 백오프에 사용. */
+export class FlexHttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly url: string,
+    public readonly body: string,
+    public readonly retryAfterMs?: number,
+  ) {
+    super(`HTTP ${status}: ${url}${body ? ` — ${body.slice(0, 200)}` : ""}`);
+    this.name = "FlexHttpError";
+  }
+}
+
+function parseRetryAfter(headerValue: string | null): number | undefined {
+  if (!headerValue) return undefined;
+  const seconds = Number(headerValue);
+  if (!Number.isNaN(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(headerValue);
+  if (!Number.isNaN(date)) return Math.max(0, date - Date.now());
+  return undefined;
+}
+
 /** 재시도 래퍼 */
 export async function withRetry<T>(
   fn: () => Promise<T>,
@@ -64,13 +86,41 @@ export async function withRetry<T>(
       }
 
       if (attempt < options.maxRetries) {
-        const backoff = options.delayMs * Math.pow(2, attempt);
+        const retryAfter =
+          error instanceof FlexHttpError && error.status === 429 ? error.retryAfterMs : undefined;
+        const baseDelay = options.delayMs > 0 ? options.delayMs : 250;
+        const backoff = retryAfter ?? baseDelay * Math.pow(2, attempt);
         await delay(backoff);
       }
     }
   }
 
   throw lastError;
+}
+
+/**
+ * 동시 N개로 작업을 처리하는 단순 워커풀.
+ * 입력 순서를 보존하지 않고, 각 항목별 결과를 그대로 반환한다.
+ */
+export async function pooledMap<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIdx = 0;
+
+  async function runner(): Promise<void> {
+    while (true) {
+      const idx = nextIdx++;
+      if (idx >= items.length) return;
+      results[idx] = await worker(items[idx], idx);
+    }
+  }
+
+  const n = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(Array.from({ length: n }, () => runner()));
+  return results;
 }
 
 /** 요청 간 딜레이 */
@@ -99,7 +149,7 @@ export async function flexFetch<T>(authCtx: AuthContext, url: string): Promise<T
   const res = await fetch(url, { headers: apiHeaders(authCtx) });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status}: ${url}${body ? ` — ${body.slice(0, 200)}` : ""}`);
+    throw new FlexHttpError(res.status, url, body, parseRetryAfter(res.headers.get("retry-after")));
   }
   return (await res.json()) as T;
 }
@@ -113,7 +163,7 @@ export async function flexPost<T>(authCtx: AuthContext, url: string, body: unkno
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status}: ${url}${text ? ` — ${text.slice(0, 200)}` : ""}`);
+    throw new FlexHttpError(res.status, url, text, parseRetryAfter(res.headers.get("retry-after")));
   }
   return (await res.json()) as T;
 }

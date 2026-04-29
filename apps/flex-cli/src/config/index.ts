@@ -16,8 +16,26 @@ const configSchema = z.object({
   flexBaseUrl: z.string().url().default("https://flex.team"),
   outputDir: z.string().default("./output"),
   catalogPath: z.string().default("./output/api-catalog.json"),
-  requestDelayMs: z.coerce.number().int().min(0).default(1000),
+  /**
+   * 요청 간 의도적 sleep. 동시성으로 throttling을 대체하므로 기본 0.
+   * 외부 환경(공유 IP 풀 등)에서 보수적으로 돌릴 일이 있으면 env로 올린다.
+   */
+  requestDelayMs: z.coerce.number().int().min(0).default(0),
   maxRetries: z.coerce.number().int().min(0).default(3),
+  /**
+   * 인스턴스/템플릿 상세 fetch 동시 워커 수.
+   * probe 실측: c=32까지 429 0건, c=64에서 throughput 정점, c=96+ 부터 latency 증가.
+   * 안전 마진을 두고 16을 기본값으로 사용.
+   */
+  concurrency: z.coerce.number().int().min(1).default(16),
+  /** 한 문서의 첨부파일 다운로드 동시 수. */
+  attachmentConcurrency: z.coerce.number().int().min(1).default(4),
+  /**
+   * approval-document 검색 1회 호출의 size.
+   * 이 endpoint의 cursor 페이지네이션이 신뢰할 수 없게 동작하는 케이스가 있어
+   * size를 키우면 한 번에 끝나는 경우가 많다. 초과 시 경고를 띄운다.
+   */
+  searchPageSize: z.coerce.number().int().min(1).default(1000),
   downloadAttachments: z
     .enum(["true", "false"])
     .transform((v) => v === "true")
@@ -64,6 +82,9 @@ export function loadConfig(): Config {
     catalogPath: process.env.CATALOG_PATH || undefined,
     requestDelayMs: process.env.REQUEST_DELAY_MS || undefined,
     maxRetries: process.env.MAX_RETRIES || undefined,
+    concurrency: process.env.CONCURRENCY || undefined,
+    attachmentConcurrency: process.env.ATTACHMENT_CONCURRENCY || undefined,
+    searchPageSize: process.env.SEARCH_PAGE_SIZE || undefined,
     downloadAttachments: process.env.DOWNLOAD_ATTACHMENTS || undefined,
     crawlSensitive: process.env.FLEX_CRAWL_SENSITIVE || undefined,
     skipEndpoints: process.env.FLEX_SKIP_ENDPOINTS || undefined,
