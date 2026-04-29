@@ -1,11 +1,7 @@
 import { Entry } from "@napi-rs/keyring";
 import type { Logger } from "../logger/index.js";
 
-/**
- * 키링 entry 식별자.
- * flex-cli와 flex-crawler가 같은 service+account를 공유하도록 통일한다.
- * → 사용자가 `flex-ax login`으로 한 번 등록하면 flex-crawler도 그대로 읽어 쓴다.
- */
+/** 키링 entry 식별자. account는 호출자가 email로 채운다. */
 const KEYRING_SERVICE = "flex-ax";
 
 export interface Credentials {

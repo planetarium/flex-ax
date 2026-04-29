@@ -7,9 +7,9 @@ import { join } from "node:path";
  *
  * - 위치: `~/.flex-ax/config.json` (Win/macOS/Linux 공통 — `os.homedir()` 기준)
  * - 권한: 0600 — 본인만 읽기/쓰기. 이메일은 비밀이 아니지만 위생상 좁힌다.
- * - 용도: CWD 의 `.env` 와 무관하게 어디서든 `flex-ax`/`flex-crawler` 가
- *   자기 자신의 정보를 찾을 수 있도록 한다. 비밀번호는 여기에 저장하지 않고
- *   OS 키링으로 분리한다 (auth/credentials.ts).
+ * - 용도: CWD 의 `.env` 와 무관하게 어디서든 `flex-ax`가 자기 자신의 정보를
+ *   찾을 수 있도록 한다. 비밀번호는 여기에 저장하지 않고 OS 키링으로 분리한다
+ *   (auth/credentials.ts).
  */
 const CONFIG_DIR = join(homedir(), ".flex-ax");
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
