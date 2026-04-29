@@ -36,7 +36,8 @@ export async function resolveCredentials(email: string, logger: Logger): Promise
   if (password.length === 0) {
     throw new Error("비밀번호 입력이 비어 있습니다.");
   }
-  saveToKeyring(email, password, logger);
+  // 키링 저장은 호출자가 실제 로그인 검증을 통과한 뒤에 한다.
+  // 여기서 저장하면 오타가 그대로 박혀 다음 실행에서도 401만 반복된다.
   return { email, password, source: "prompt" };
 }
 

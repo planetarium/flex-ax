@@ -1,7 +1,22 @@
 import { randomUUID } from "node:crypto";
 import type { Config } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
-import { resolveCredentials, deleteFromKeyring } from "./credentials.js";
+import { resolveCredentials, saveToKeyring, deleteFromKeyring } from "./credentials.js";
+
+/**
+ * status code를 들고 있는 typed 에러. 로그인 단계의 4xx 응답을 정밀하게 식별해
+ * "키링 비밀번호 무효화" 같은 분기를 자유 텍스트 매칭 없이 결정할 수 있게 한다.
+ */
+export class HttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly url: string,
+    public readonly body: string,
+  ) {
+    super(`HTTP ${status} ${url}${body ? ` — ${body.slice(0, 300)}` : ""}`);
+    this.name = "HttpError";
+  }
+}
 
 /**
  * 인증 컨텍스트 — Playwright 없이 토큰만 들고 다닌다.
@@ -49,7 +64,7 @@ async function postJson<T>(url: string, body: unknown, headers: Record<string, s
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status} POST ${url} — ${text.slice(0, 300)}`);
+    throw new HttpError(res.status, `POST ${url}`, text);
   }
   return (await res.json()) as T;
 }
@@ -58,7 +73,7 @@ async function getJson<T>(url: string, headers: Record<string, string>): Promise
   const res = await fetch(url, { headers });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status} GET ${url} — ${text.slice(0, 300)}`);
+    throw new HttpError(res.status, `GET ${url}`, text);
   }
   return (await res.json()) as T;
 }
@@ -76,25 +91,36 @@ export async function authenticate(config: Config, logger: Logger): Promise<Auth
     ? { email: config.flexEmail, password: config.flexPassword, source: "env" as const }
     : await resolveCredentials(config.flexEmail, logger);
 
+  let ctx: AuthContext;
   try {
-    return await performLogin(config.flexBaseUrl, creds.email, creds.password, logger);
+    ctx = await performLogin(config.flexBaseUrl, creds.email, creds.password, logger);
   } catch (error) {
-    // 키링에 저장된 비밀번호가 만료/오타로 401을 받은 경우, 자동으로 무효화하고
+    // 키링에 저장된 비밀번호가 만료/오타로 인증 거절을 받은 경우, 자동으로 무효화하고
     // 프롬프트로 한 번만 재시도한다. env에서 온 비밀번호는 사용자가 명시적으로
-    // 지정한 값이므로 건드리지 않는다.
+    // 지정한 값이므로 건드리지 않고, prompt에서 온 값은 애초에 키링에 들어있지 않다.
     if (creds.source === "keyring" && isAuthFailure(error) && process.stdin.isTTY) {
       logger.warn("키링에 저장된 비밀번호로 로그인 실패 — 항목을 삭제하고 다시 입력받습니다.");
       deleteFromKeyring(creds.email);
       creds = await resolveCredentials(config.flexEmail, logger);
-      return await performLogin(config.flexBaseUrl, creds.email, creds.password, logger);
+      ctx = await performLogin(config.flexBaseUrl, creds.email, creds.password, logger);
+    } else {
+      throw error;
     }
-    throw error;
   }
+
+  // 검증을 통과한 비밀번호만 키링에 저장한다.
+  // - source === "prompt": 처음 입력받은 값을 다음 실행에서 재사용 가능하게 한다.
+  // - source === "keyring"/"env": 이미 저장돼 있거나 사용자가 일회성으로 지정한 값이라 건드리지 않는다.
+  if (creds.source === "prompt") {
+    saveToKeyring(creds.email, creds.password, logger);
+  }
+  return ctx;
 }
 
 function isAuthFailure(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return /HTTP 4(00|01|03)/.test(error.message);
+  // 자유 텍스트 매칭 대신 typed error로 좁힌다 — 응답 바디에 "HTTP 401" 같은
+  // 문자열이 우연히 들어 있어도 트립되지 않는다. 인증 단계의 4xx만을 무효화 시그널로 본다.
+  return error instanceof HttpError && error.status >= 400 && error.status < 500;
 }
 
 /**

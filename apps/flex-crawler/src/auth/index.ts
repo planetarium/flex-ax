@@ -1,7 +1,18 @@
 import { randomUUID } from "node:crypto";
 import type { CrawlerConfig } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
-import { resolveCredentials, deleteFromKeyring } from "./credentials.js";
+import { resolveCredentials, saveToKeyring, deleteFromKeyring } from "./credentials.js";
+
+export class HttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly url: string,
+    public readonly body: string,
+  ) {
+    super(`HTTP ${status} ${url}${body ? ` — ${body.slice(0, 300)}` : ""}`);
+    this.name = "HttpError";
+  }
+}
 
 /**
  * 토큰 기반 인증 컨텍스트 — Playwright 없이 동작.
@@ -41,7 +52,7 @@ async function postJson<T>(url: string, body: unknown, headers: Record<string, s
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status} POST ${url} — ${text.slice(0, 300)}`);
+    throw new HttpError(res.status, `POST ${url}`, text);
   }
   return (await res.json()) as T;
 }
@@ -76,6 +87,12 @@ export async function authenticate(
     } else {
       throw error;
     }
+  }
+
+  // 검증을 통과한 prompt 비밀번호만 키링에 저장한다.
+  // env/keyring 출처는 건드리지 않는다.
+  if (creds.source === "prompt") {
+    saveToKeyring(creds.email, creds.password, logger);
   }
 
   // flex-crawler는 단일 법인 경로(현재 사용자 default)로 동작하므로,
@@ -156,8 +173,7 @@ async function runLoginFlow(
 }
 
 function isAuthFailure(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return /HTTP 4(00|01|03)/.test(error.message);
+  return error instanceof HttpError && error.status >= 400 && error.status < 500;
 }
 
 async function switchCustomer(

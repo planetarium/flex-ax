@@ -94,7 +94,8 @@ Commands:
   update          최신 버전으로 업데이트
 
 Options:
-  --version, -v   버전 출력
+  --version, -v       버전 출력
+  --password-stdin    (login 전용) 비밀번호를 stdin 파이프로 주입
 
 Env:
   FLEX_EMAIL                  선택 — 지정 시 글로벌 config보다 우선
