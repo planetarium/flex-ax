@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import YAML from "yaml";
 import { z } from "zod";
 import { parseFieldOptions } from "./policy.js";
+import { decodeEmoji } from "./templates.js";
 import type {
   ApprovalLine,
   InputFieldMeta,
@@ -147,7 +148,8 @@ export function renderInputTemplate(policy: ResolvedPolicy): string {
     "  ",
   );
 
-  return `# ${policy.emoji ? policy.emoji + " " : ""}${policy.templateName}
+  const emoji = decodeEmoji(policy.emoji);
+  return `# ${emoji ? emoji + " " : ""}${policy.templateName}
 # templateKey: ${policy.templateKey}
 #
 # 'fields' 와 'attachments' 를 채워 \`flex-ax workflow submit <file>\` 으로 제출하세요.

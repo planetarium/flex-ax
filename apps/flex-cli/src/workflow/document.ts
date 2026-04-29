@@ -25,12 +25,14 @@ interface DraftCreateResponse {
   draft?: {
     document?: {
       documentKey?: string;
-      attachments?: Array<{
-        idHash?: string;
-        file?: { fileKey?: string; fileName?: string; downloadUrl?: string };
-      }>;
+      attachments?: DraftAttachmentResp[];
     };
   };
+}
+
+interface DraftAttachmentResp {
+  idHash?: string;
+  file?: { fileKey?: string; fileName?: string; downloadUrl?: string };
 }
 
 interface SubmitResponse {
@@ -91,8 +93,15 @@ export async function registerAttachments(
     );
   }
 
+  // 매칭 우선순위:
+  //   1) idx 매칭의 fileName이 일치 → 인덱스 그대로
+  //   2) 동일 인덱스의 fileName이 다르면 같은 이름의 응답 항목으로 fallback
+  //      (서버가 정렬을 바꾸는 케이스 대비)
+  //   3) 응답에 fileName 자체가 없으면 인덱스 매칭에 의존 (캡처 시점엔 항상 있었음)
+  // 동일 이름 다중 첨부 케이스는 first-match로 떨어진다 — CLI에서 같은 파일을 두 번
+  // 명시하는 건 사용자 책임 영역이라 1차 구현은 여기까지만 방어한다.
   return payload.attachments.map((att, idx) => {
-    const perm = respAttachments[idx]?.file?.fileKey;
+    const perm = pickPermFileKey(respAttachments, idx, att.name);
     if (!perm) {
       throw new Error(
         `attachment ${idx} (${att.name})에 영구 fileKey가 발급되지 않았습니다`,
@@ -100,6 +109,20 @@ export async function registerAttachments(
     }
     return { ...att, permFileKey: perm };
   });
+}
+
+function pickPermFileKey(
+  resp: DraftAttachmentResp[],
+  idx: number,
+  expectedName: string,
+): string | undefined {
+  const direct = resp[idx];
+  if (direct?.file?.fileKey && (!direct.file.fileName || direct.file.fileName === expectedName)) {
+    return direct.file.fileKey;
+  }
+  const byName = resp.find((r) => r.file?.fileName === expectedName && r.file?.fileKey);
+  if (byName?.file?.fileKey) return byName.file.fileKey;
+  return direct?.file?.fileKey;
 }
 
 /**

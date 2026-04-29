@@ -7,6 +7,25 @@ interface AvailableTemplatesResponse {
 }
 
 /**
+ * 서버는 emoji를 `"U+1F5D2-U+FE0F"` 같은 코드포인트 문자열로 내려준다.
+ * 출력 시점에 실제 글자로 디코딩한다 — 디코딩 실패는 원본을 그대로 돌려줘
+ * 사용자가 적어도 어떤 양식인지 식별 가능하도록 한다.
+ */
+export function decodeEmoji(encoded: string | undefined): string {
+  if (!encoded) return "";
+  const codepoints = encoded
+    .split("-")
+    .map((s) => parseInt(s.replace(/^U\+/i, ""), 16))
+    .filter((n) => Number.isFinite(n));
+  if (codepoints.length === 0) return encoded;
+  try {
+    return String.fromCodePoint(...codepoints);
+  } catch {
+    return encoded;
+  }
+}
+
+/**
  * 작성자가 실제로 작성 가능한 양식 목록을 조회한다.
  *
  * crawl은 `/api/v3/approval-document-template/templates` 를 쓰지만 그쪽은

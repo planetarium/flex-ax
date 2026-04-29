@@ -9,7 +9,7 @@ import {
   type AuthContext,
   type Corporation,
 } from "../auth/index.js";
-import { listAvailableTemplates, findTemplate } from "../workflow/templates.js";
+import { listAvailableTemplates, findTemplate, decodeEmoji } from "../workflow/templates.js";
 import { resolvePolicy } from "../workflow/policy.js";
 import { uploadAttachment } from "../workflow/file.js";
 import {
@@ -190,8 +190,9 @@ async function cmdTemplates(args: string[]): Promise<void> {
     // 마지막 컬럼으로 보낸다.
     for (const t of templates) {
       const tags = t.tags?.map((tg) => tg.name).join(",") ?? "";
+      const emoji = decodeEmoji(t.emoji);
       console.log(
-        `${t.templateKey}\t${t.name}${tags ? "\t[" + tags + "]" : ""}${t.emoji ? "\t" + t.emoji : ""}`,
+        `${t.templateKey}\t${t.name}${tags ? "\t[" + tags + "]" : ""}${emoji ? "\t" + emoji : ""}`,
       );
     }
   } finally {
