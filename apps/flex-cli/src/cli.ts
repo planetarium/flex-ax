@@ -2,25 +2,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-// 자동 업데이트 시 재실행할 원본 인자 보존
 const originalArgs = process.argv.slice(2);
-
-// --auth <mode> 플래그 파싱 (커맨드 앞뒤 어디든 가능)
-const rawArgs = process.argv.slice(2);
-const authIdx = rawArgs.indexOf("--auth");
-if (authIdx !== -1) {
-  const authValue = rawArgs[authIdx + 1];
-  if (!authValue || authValue.startsWith("-")) {
-    console.error(`[FLEX-AX:ERROR] --auth에 모드를 지정해 주세요: credentials | sso | playwriter`);
-    process.exit(1);
-  }
-  process.env.AUTH_MODE = authValue;
-  rawArgs.splice(authIdx, 2);
-}
-// 정리된 인자를 process.argv에 반영 (하위 커맨드가 참조할 수 있도록)
-process.argv = [process.argv[0], process.argv[1], ...rawArgs];
-
-const command = rawArgs[0];
+const command = originalArgs[0];
 
 if (command === "--version" || command === "-v") {
   const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -31,18 +14,12 @@ if (command === "--version" || command === "-v") {
 
 await import("dotenv/config");
 
-// update/help 외 명령에 대해 새 버전 감지 → 자동 설치 → 재실행
 if (command && command !== "update" && command !== "help") {
   const { maybeAutoUpdate } = await import("./auto-update.js");
   await maybeAutoUpdate(originalArgs);
 }
 
 switch (command) {
-  case "discover": {
-    const { runDiscover } = await import("./commands/discover.js");
-    await runDiscover();
-    break;
-  }
   case "crawl": {
     const { runCrawl } = await import("./commands/crawl.js");
     await runCrawl();
@@ -85,7 +62,6 @@ switch (command) {
     console.log(`Usage: flex-ax <command>
 
 Commands:
-  discover        API 디스커버리 → api-catalog.json 생성
   crawl           카탈로그 기반 크롤링 → output/ 저장
   import          크롤링 결과(JSON) → SQLite DB 변환
   query "SQL"     DB 쿼리 실행 → JSON 출력 (read-only)
@@ -97,10 +73,12 @@ Commands:
   update          최신 버전으로 업데이트
 
 Options:
-  --auth <mode>   인증 모드: credentials | sso | playwriter
   --version, -v   버전 출력
 
 Env:
+  FLEX_EMAIL, FLEX_PASSWORD   필수 — flex 로그인 자격
+  FLEX_BASE_URL               기본 https://flex.team
+  FLEX_CUSTOMERS              크롤 대상 법인 customerIdHash (콤마 구분)
   FLEX_AX_AUTO_UPDATE=false   기동 시 자동 업데이트 비활성화`);
     process.exit(command === "help" ? 0 : 1);
 }

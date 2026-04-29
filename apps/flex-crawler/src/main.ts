@@ -25,7 +25,6 @@ async function main() {
   logger.info("설정 로딩 완료", {
     baseUrl: config.flexBaseUrl,
     outputDir: config.outputDir,
-    headless: config.headless,
   });
 
   // 2. 저장소 초기화
@@ -66,7 +65,7 @@ async function main() {
       instanceCrawlResult.collectedKeys,
     );
   } finally {
-    // 7. 브라우저 정리
+    // 7. 정리 (현재는 no-op이지만 호환성을 위해 호출)
     await cleanup(authCtx);
   }
 

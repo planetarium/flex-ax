@@ -23,7 +23,6 @@
   "dependencies": {
     "better-sqlite3": "^12.8.0",
     "dotenv": "^16.4.7",
-    "playwright": "^1.50.1",
     "semver": "^7.7.4",
     "zod": "^3.24.2"
   },

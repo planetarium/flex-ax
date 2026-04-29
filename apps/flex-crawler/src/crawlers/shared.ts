@@ -1,5 +1,5 @@
 import type { CrawlError } from "../types/common.js";
-import type { AuthContext } from "../auth/index.js";
+import { type AuthContext, apiHeaders } from "../auth/index.js";
 
 /** 수집 결과 */
 export interface CrawlResult {
@@ -93,37 +93,26 @@ export function emptyCrawlResult(): CrawlResult {
   };
 }
 
-/** 인증된 브라우저 컨텍스트에서 flex API GET 호출 */
+/** 인증 토큰을 실어 flex API GET 호출 */
 export async function flexFetch<T>(authCtx: AuthContext, url: string): Promise<T> {
-  const result = await authCtx.page.evaluate(
-    async ([fetchUrl, headers]) => {
-      const res = await fetch(fetchUrl, {
-        headers: headers as Record<string, string>,
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${fetchUrl}`);
-      return await res.json();
-    },
-    [url, authCtx.authHeaders] as const,
-  );
-  return result as T;
+  const res = await fetch(url, { headers: apiHeaders(authCtx) });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`HTTP ${res.status}: ${url}${text ? ` — ${text.slice(0, 200)}` : ""}`);
+  }
+  return (await res.json()) as T;
 }
 
-/** 인증된 브라우저 컨텍스트에서 flex API POST 호출 */
+/** 인증 토큰을 실어 flex API POST 호출 */
 export async function flexPost<T>(authCtx: AuthContext, url: string, body: unknown): Promise<T> {
-  const result = await authCtx.page.evaluate(
-    async ([fetchUrl, headers, bodyStr]) => {
-      const res = await fetch(fetchUrl, {
-        method: "POST",
-        headers: {
-          ...(headers as Record<string, string>),
-          "content-type": "application/json",
-        },
-        body: bodyStr as string,
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${fetchUrl}`);
-      return await res.json();
-    },
-    [url, authCtx.authHeaders, JSON.stringify(body)] as const,
-  );
-  return result as T;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: apiHeaders(authCtx),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`HTTP ${res.status}: ${url}${text ? ` — ${text.slice(0, 200)}` : ""}`);
+  }
+  return (await res.json()) as T;
 }
