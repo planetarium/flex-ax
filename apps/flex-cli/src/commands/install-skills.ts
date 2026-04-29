@@ -15,7 +15,6 @@ export async function runInstallSkills(): Promise<void> {
     accessSync(skillsSource);
   } catch {
     console.error(`[FLEX-AX:ERROR] 스킬 소스 디렉토리를 찾을 수 없습니다: ${skillsSource}`);
-    console.error("[FLEX-AX:ERROR] 사용자 배포용 스킬은 아직 추가되지 않았습니다.");
     process.exit(1);
   }
 
