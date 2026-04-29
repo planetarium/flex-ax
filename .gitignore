@@ -11,5 +11,6 @@ coverage/
 .next/
 out/
 workflow-docs/
-.claude/
+.claude/*
+!.claude/skills/
 bun-dist/
