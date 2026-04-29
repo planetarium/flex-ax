@@ -1,6 +1,6 @@
 {
   "name": "flex-ax",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "flex HR SaaS AX CLI - discover, crawl, and manage flex data",
@@ -21,9 +21,9 @@
     "clean": "rimraf output dist"
   },
   "dependencies": {
+    "@napi-rs/keyring": "^1.1.7",
     "better-sqlite3": "^12.8.0",
     "dotenv": "^16.4.7",
-    "playwright": "^1.50.1",
     "semver": "^7.7.4",
     "zod": "^3.24.2"
   },
@@ -31,6 +31,7 @@
     "node": "20.x || 22.x || 23.x || 24.x || 25.x"
   },
   "devDependencies": {
+    "@1password/sdk": "^0.4.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.13.5",
     "@types/semver": "^7.7.1",

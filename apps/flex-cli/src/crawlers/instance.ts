@@ -1,4 +1,4 @@
-import type { AuthContext } from "../auth/index.js";
+import { type AuthContext, apiHeaders } from "../auth/index.js";
 import type { Config } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
 import type { StorageWriter } from "../storage/index.js";
@@ -388,13 +388,11 @@ async function processAttachments(
 
     if (config.downloadAttachments) {
       try {
-        const response = await authCtx.page.request.get(att.file.downloadUrl, {
-          headers: authCtx.authHeaders as Record<string, string>,
-        });
-        if (!response.ok()) {
-          throw new Error(`HTTP ${response.status()}: ${att.file.downloadUrl}`);
+        const response = await fetch(att.file.downloadUrl, { headers: apiHeaders(authCtx) });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${att.file.downloadUrl}`);
         }
-        const buffer = await response.body();
+        const buffer = Buffer.from(await response.arrayBuffer());
 
         const savedPath = await storage.saveAttachment(
           instanceId, att.file.fileName, buffer, att.file.fileKey,

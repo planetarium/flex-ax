@@ -1,218 +1,231 @@
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import { randomUUID } from "node:crypto";
 import type { CrawlerConfig } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
+import { resolveCredentials, saveToKeyring, deleteFromKeyring } from "./credentials.js";
 
+export class HttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly url: string,
+    public readonly body: string,
+  ) {
+    super(`HTTP ${status} ${url}${body ? ` — ${body.slice(0, 300)}` : ""}`);
+    this.name = "HttpError";
+  }
+}
+
+/**
+ * 토큰 기반 인증 컨텍스트 — Playwright 없이 동작.
+ *
+ * authenticate()로 워크스페이스 토큰을 받고, 필요 시 customerToken을 발급받아
+ * x-flex-aid 헤더로 앱 API에 동봉한다.
+ */
 export interface AuthContext {
-  browser: Browser | null;
-  context: BrowserContext;
-  page: Page;
-  authHeaders: Record<string, string>;
+  baseUrl: string;
+  deviceId: string;
+  workspaceToken: string;
+  refreshToken: string;
+  customerToken: string | null;
+}
+
+const PRODUCT_HEADERS: Record<string, string> = {
+  "x-flex-axios": "base",
+  "flexteam-productcode": "FLEX",
+  "flexteam-locale": "ko",
+};
+
+function baseHeaders(deviceId: string, extra?: Record<string, string>): Record<string, string> {
+  return {
+    "content-type": "application/json",
+    accept: "application/json, text/plain, */*",
+    "flexteam-deviceid": deviceId,
+    ...PRODUCT_HEADERS,
+    ...(extra ?? {}),
+  };
+}
+
+async function postJson<T>(url: string, body: unknown, headers: Record<string, string>): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new HttpError(res.status, `POST ${url}`, text);
+  }
+  return (await res.json()) as T;
 }
 
 export async function authenticate(
   config: CrawlerConfig,
   logger: Logger,
 ): Promise<AuthContext> {
-  if (config.authMode === "sso") {
-    return authenticateSSO(config, logger);
-  }
-  return authenticateCredentials(config, logger);
-}
-
-async function launchBrowser(
-  config: CrawlerConfig,
-): Promise<{ browser: Browser; context: BrowserContext; page: Page; authHeaders: Record<string, string> }> {
-  const browser = await chromium.launch({ headless: config.headless });
-  const context = await browser.newContext();
-  const page = await context.newPage();
-  const authHeaders: Record<string, string> = {};
-
-  const baseHostname = new URL(config.flexBaseUrl).hostname;
-  page.on("request", (request) => {
-    const url = request.url();
-    try {
-      const reqHostname = new URL(url).hostname;
-      if (reqHostname === baseHostname && (url.includes("/api/") || url.includes("/action/"))) {
-        const headers = request.headers();
-        for (const key of ["authorization", "cookie", "x-csrf-token"]) {
-          if (headers[key]) {
-            authHeaders[key] = headers[key];
-          }
-        }
-      }
-    } catch {
-      // invalid URL, skip
-    }
-  });
-
-  return { browser, context, page, authHeaders };
-}
-
-async function collectCookies(
-  context: BrowserContext,
-  authHeaders: Record<string, string>,
-  baseUrl: string,
-): Promise<void> {
-  const targetUrl = new URL(baseUrl).origin;
-  const cookies = await context.cookies(targetUrl);
-  if (cookies.length > 0) {
-    authHeaders["cookie"] = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
-  }
-}
-
-async function authenticateCredentials(
-  config: CrawlerConfig,
-  logger: Logger,
-): Promise<AuthContext> {
-  logger.info("브라우저 시작...");
-  const { browser, context, page, authHeaders } = await launchBrowser(config);
-
-  logger.info("flex 로그인 페이지 이동...");
-  await page.goto(`${config.flexBaseUrl}/login`, { waitUntil: "networkidle" });
-
-  // Step 1: 이메일 입력 후 Enter (다음 단계 전환)
-  logger.info("이메일 입력...");
-  const emailInput = page.locator('input[type="email"]');
-  await emailInput.fill(config.flexEmail);
-  await emailInput.press("Enter");
-
-  // Step 2: 비밀번호 필드 나타남 → 입력 → 로그인하기 클릭
-  logger.info("비밀번호 입력...");
-  const passwordInput = page.locator('input[type="password"]');
-  await passwordInput.waitFor({ state: "visible", timeout: 10000 });
-  await passwordInput.fill(config.flexPassword);
-  await page.locator('button[type="submit"]').click();
-
-  // 로그인 완료 대기
-  logger.info("로그인 완료 대기...");
-  await page.waitForURL((url) => !url.toString().includes("/auth/login"), {
-    timeout: 30000,
-  });
-
-  await page.waitForLoadState("networkidle");
-  await collectCookies(context, authHeaders, config.flexBaseUrl);
-
-  logger.info("로그인 성공", { url: page.url() });
-  return { browser, context, page, authHeaders };
-}
-
-async function authenticateSSO(
-  config: CrawlerConfig,
-  logger: Logger,
-): Promise<AuthContext> {
-  const userDataDir = config.chromeUserDataDir || getDefaultChromeUserDataDir();
-  logger.info("SSO 모드: 기존 Chrome 프로필의 세션을 사용합니다.", { userDataDir });
-
-  const authHeaders: Record<string, string> = {};
-  const context = await chromium.launchPersistentContext(userDataDir, {
-    headless: false, // SSO 모드에서는 항상 브라우저 표시
-    channel: "chrome", // 설치된 Chrome 사용
-  });
-
-  const page = context.pages()[0] ?? await context.newPage();
-
-  const ssoHostname = new URL(config.flexBaseUrl).hostname;
-  page.on("request", (request) => {
-    const url = request.url();
-    try {
-      const reqHostname = new URL(url).hostname;
-      if (reqHostname === ssoHostname && (url.includes("/api/") || url.includes("/action/"))) {
-        const headers = request.headers();
-        for (const key of ["authorization", "cookie", "x-csrf-token"]) {
-          if (headers[key]) {
-            authHeaders[key] = headers[key];
-          }
-        }
-      }
-    } catch { /* skip */ }
-  });
-
-  // flex.team으로 이동 — 이미 로그인되어 있으면 바로 대시보드로 감
-  await page.goto(`${config.flexBaseUrl}`, { waitUntil: "networkidle" });
-
-  // 로그인 페이지로 리다이렉트된 경우 수동 로그인 대기
-  const currentUrl = page.url();
-  if (currentUrl.includes("/login") || currentUrl.includes("/auth/") || currentUrl.includes("accounts.google.com")) {
-    logger.info("로그인이 필요합니다. 브라우저에서 로그인을 완료해 주세요. (최대 5분 대기)");
-    await page.waitForURL(
-      (url) => {
-        const s = url.toString();
-        return (
-          !s.includes("/login") &&
-          !s.includes("/auth/") &&
-          !s.includes("accounts.google.com")
-        );
-      },
-      { timeout: 300_000 },
+  if (!config.flexEmail) {
+    throw new Error(
+      "이메일을 찾을 수 없습니다. flex-cli에서 `flex-ax login`을 한 번 실행하거나 FLEX_EMAIL 환경 변수를 설정하세요.",
     );
   }
 
-  await page.waitForLoadState("networkidle");
-  await collectCookies(context, authHeaders, config.flexBaseUrl);
+  // 비밀번호: env > 키링 > 프롬프트
+  let creds = config.flexPassword
+    ? { email: config.flexEmail, password: config.flexPassword, source: "env" as const }
+    : await resolveCredentials(config.flexEmail, logger);
 
-  logger.info("SSO 로그인 성공", { url: page.url() });
-
-  return { browser: context.browser(), context, page, authHeaders };
-}
-
-function getDefaultChromeUserDataDir(): string {
-  const platform = process.platform;
-  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
-  if (platform === "darwin") {
-    return `${home}/Library/Application Support/Google/Chrome`;
-  }
-  if (platform === "win32") {
-    const localAppData = process.env.LOCALAPPDATA
-      ?? (process.env.USERPROFILE ? `${process.env.USERPROFILE}\\AppData\\Local` : undefined);
-    if (!localAppData) {
-      throw new Error(
-        "Chrome 사용자 데이터 디렉터리를 확인할 수 없습니다. CHROME_USER_DATA_DIR 환경 변수를 설정해 주세요.",
-      );
+  let authz;
+  let deviceId = randomUUID();
+  const baseUrl = config.flexBaseUrl;
+  try {
+    authz = await runLoginFlow(baseUrl, deviceId, creds.email, creds.password, logger);
+  } catch (error) {
+    if (creds.source === "keyring" && isAuthFailure(error) && process.stdin.isTTY) {
+      logger.warn("키링에 저장된 비밀번호로 로그인 실패 — 항목을 삭제하고 다시 입력받습니다.");
+      deleteFromKeyring(creds.email);
+      creds = await resolveCredentials(config.flexEmail, logger);
+      deviceId = randomUUID();
+      authz = await runLoginFlow(baseUrl, deviceId, creds.email, creds.password, logger);
+    } else {
+      throw error;
     }
-    return `${localAppData}\\Google\\Chrome\\User Data`;
   }
-  // linux
-  return `${home}/.config/google-chrome`;
+
+  // 검증을 통과한 prompt 비밀번호만 키링에 저장한다.
+  // env/keyring 출처는 건드리지 않는다.
+  if (creds.source === "prompt") {
+    saveToKeyring(creds.email, creds.password, logger);
+  }
+
+  // flex-crawler는 단일 법인 경로(현재 사용자 default)로 동작하므로,
+  // 로그인 직후 default customer-user pair로 즉시 exchange하여 customerToken을 채운다.
+  const pairsRes = await fetch(
+    `${baseUrl}/api-public/v2/auth/tokens/customer-user`,
+    {
+      headers: baseHeaders(deviceId, {
+        "flexteam-v2-workspace-access": authz.v2Response.workspaceToken.accessToken.token,
+      }),
+    },
+  );
+  if (!pairsRes.ok) {
+    throw new Error(`customer-user pair 조회 실패: HTTP ${pairsRes.status}`);
+  }
+  const pairs = (await pairsRes.json()) as Array<{ customerUuid: string; userUuid: string }>;
+  if (pairs.length === 0) {
+    throw new Error("접근 가능한 법인이 없습니다.");
+  }
+
+  const ctx: AuthContext = {
+    baseUrl,
+    deviceId,
+    workspaceToken: authz.v2Response.workspaceToken.accessToken.token,
+    refreshToken: authz.v2Response.workspaceToken.refreshToken.token,
+    customerToken: null,
+  };
+  await switchCustomer(ctx, pairs[0].customerUuid, pairs[0].userUuid);
+
+  logger.info("로그인 성공");
+  return ctx;
 }
 
+type AuthorizationResponse = {
+  v2Response: {
+    workspaceToken: {
+      accessToken: { token: string; expireAt: string };
+      refreshToken: { token: string; expireAt: string };
+    };
+  };
+};
+
+async function runLoginFlow(
+  baseUrl: string,
+  deviceId: string,
+  email: string,
+  password: string,
+  logger: Logger,
+): Promise<AuthorizationResponse> {
+  logger.info("로그인 challenge...");
+  const challenge = await postJson<{ sessionId: string }>(
+    `${baseUrl}/api-public/v2/auth/challenge`,
+    { loginAuthzFlow: false },
+    baseHeaders(deviceId),
+  );
+  const sessionHeaders = baseHeaders(deviceId, { "flexteam-v2-login-session-id": challenge.sessionId });
+
+  logger.info("이메일 검증...");
+  await postJson(
+    `${baseUrl}/api-public/v2/auth/verification/identifier`,
+    { identifier: email },
+    sessionHeaders,
+  );
+
+  logger.info("비밀번호 인증...");
+  await postJson(
+    `${baseUrl}/api-public/v2/auth/authentication/password`,
+    { password },
+    sessionHeaders,
+  );
+
+  logger.info("토큰 발급...");
+  return await postJson<AuthorizationResponse>(
+    `${baseUrl}/api-public/v2/auth/authorization`,
+    {},
+    sessionHeaders,
+  );
+}
+
+function isAuthFailure(error: unknown): boolean {
+  return error instanceof HttpError && error.status >= 400 && error.status < 500;
+}
+
+async function switchCustomer(
+  authCtx: AuthContext,
+  customerUuid: string,
+  userUuid: string,
+): Promise<void> {
+  const resp = await postJson<{ token: string }>(
+    `${authCtx.baseUrl}/api-public/v2/auth/tokens/customer-user/exchange`,
+    { customerUuid, userUuid },
+    baseHeaders(authCtx.deviceId, { "flexteam-v2-workspace-access": authCtx.workspaceToken }),
+  );
+  authCtx.customerToken = resp.token;
+}
+
+/** 앱 API용 헤더 셋 — x-flex-aid + base 헤더 */
+export function apiHeaders(authCtx: AuthContext, extra?: Record<string, string>): Record<string, string> {
+  const headers = baseHeaders(authCtx.deviceId, extra);
+  if (authCtx.customerToken) {
+    headers["x-flex-aid"] = authCtx.customerToken;
+  }
+  return headers;
+}
+
+/**
+ * 세션 유효성을 가볍게 확인한다. 401이면 재로그인.
+ *
+ * 토큰 만료 시 새 컨텍스트를 만들어 기존 객체에 덮어쓰는 식으로,
+ * 호출자가 들고 있는 authCtx 참조를 그대로 유지한다.
+ */
 export async function ensureAuthenticated(
   authCtx: AuthContext,
   config: CrawlerConfig,
   logger: Logger,
 ): Promise<void> {
   try {
-    // 간단한 API 호출로 세션 유효성 확인
-    const response = await authCtx.page.goto(`${config.flexBaseUrl}/api/v2/core/me`, {
-      waitUntil: "domcontentloaded",
-      timeout: 10000,
-    });
-
-    if (response && response.status() === 401) {
-      logger.warn("세션 만료 감지, 재인증 시도...");
-      await cleanup(authCtx);
-      const newCtx = await authenticate(config, logger);
-      authCtx.browser = newCtx.browser;
-      authCtx.context = newCtx.context;
-      authCtx.page = newCtx.page;
-      authCtx.authHeaders = newCtx.authHeaders;
-    }
+    const res = await fetch(`${authCtx.baseUrl}/api/v2/core/me`, { headers: apiHeaders(authCtx) });
+    if (res.status !== 401) return;
+    logger.warn("세션 만료 감지, 재인증 시도...");
   } catch {
     logger.warn("세션 확인 실패, 재인증 시도...");
-    await cleanup(authCtx);
-    const newCtx = await authenticate(config, logger);
-    authCtx.browser = newCtx.browser;
-    authCtx.context = newCtx.context;
-    authCtx.page = newCtx.page;
-    authCtx.authHeaders = newCtx.authHeaders;
   }
+
+  const fresh = await authenticate(config, logger);
+  authCtx.baseUrl = fresh.baseUrl;
+  authCtx.deviceId = fresh.deviceId;
+  authCtx.workspaceToken = fresh.workspaceToken;
+  authCtx.refreshToken = fresh.refreshToken;
+  authCtx.customerToken = fresh.customerToken;
 }
 
-export async function cleanup(authCtx: AuthContext): Promise<void> {
-  try {
-    await authCtx.page.close().catch(() => {});
-    await authCtx.context.close().catch(() => {});
-    await authCtx.browser?.close().catch(() => {});
-  } catch {
-    // 정리 실패는 무시
-  }
+/** Node 인증은 닫을 리소스가 없지만 호환성을 위해 유지. */
+export async function cleanup(_authCtx: AuthContext): Promise<void> {
+  // no-op
 }

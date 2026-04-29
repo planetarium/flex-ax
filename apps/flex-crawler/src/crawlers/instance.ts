@@ -1,4 +1,4 @@
-import type { AuthContext } from "../auth/index.js";
+import { type AuthContext, apiHeaders } from "../auth/index.js";
 import type { CrawlerConfig } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
 import type { StorageWriter } from "../storage/index.js";
@@ -283,19 +283,16 @@ async function processAttachments(
 
     if (config.downloadAttachments) {
       try {
-        const buffer = await authCtx.page.evaluate(
-          async ([url, headers]) => {
-            const res = await fetch(url, { headers: headers as Record<string, string> });
-            const ab = await res.arrayBuffer();
-            return Array.from(new Uint8Array(ab));
-          },
-          [att.file.downloadUrl, authCtx.authHeaders] as const,
-        );
+        const res = await fetch(att.file.downloadUrl, { headers: apiHeaders(authCtx) });
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${att.file.downloadUrl}`);
+        }
+        const buffer = Buffer.from(await res.arrayBuffer());
 
         const savedPath = await storage.saveAttachment(
           instanceId,
           att.file.fileName,
-          Buffer.from(buffer),
+          buffer,
         );
         info.localPath = savedPath;
       } catch (error) {
