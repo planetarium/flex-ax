@@ -66,7 +66,7 @@ async function readJsonDir<T>(
 }
 
 /**
- * 지정된 input 경로에서 flex-crawler output 데이터를 읽는다.
+ * 지정된 input 경로에서 flex-cli `crawl` output 데이터를 읽는다.
  *
  * - templates/*.json, instances/*.json, attendance/*.json을 각각 읽고 파싱한다
  * - crawl-report.json을 읽는다 (없으면 null)
