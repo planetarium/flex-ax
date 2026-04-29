@@ -1,11 +1,35 @@
 import { FLEX_AX_VERSION } from "./version.js";
+import { getCommandHelp, getTopLevelHelp, isHelpFlag } from "./cli-help.js";
 
 const originalArgs = process.argv.slice(2);
-const command = originalArgs[0];
+const rawArgs = process.argv.slice(2);
+const command = rawArgs[0];
+const wantsTopLevelHelp = !command || command === "help" || isHelpFlag(command);
+const wantsCommandHelp = !wantsTopLevelHelp && rawArgs.slice(1).some((arg) => isHelpFlag(arg));
 
 if (command === "--version" || command === "-v") {
   console.log(`flex-ax ${FLEX_AX_VERSION}`);
   process.exit(0);
+}
+
+if (wantsTopLevelHelp) {
+  if (command === "help" && rawArgs[1]) {
+    const commandHelp = getCommandHelp(rawArgs[1]);
+    if (commandHelp) {
+      console.log(commandHelp);
+      process.exit(0);
+    }
+  }
+  console.log(getTopLevelHelp());
+  process.exit(0);
+}
+
+if (wantsCommandHelp) {
+  const commandHelp = getCommandHelp(command);
+  if (commandHelp) {
+    console.log(commandHelp);
+    process.exit(0);
+  }
 }
 
 await import("dotenv/config");
@@ -77,40 +101,7 @@ switch (command) {
     break;
   }
   default:
-    if (command && command !== "help") {
-      console.error(`[FLEX-AX:ERROR] Unknown command: ${command}`);
-    }
-    console.log(`Usage: flex-ax <command>
-
-Commands:
-  login           이메일/비밀번호 등록 (이메일은 ~/.flex-ax/config.json,
-                  비밀번호는 OS 키링; 검증 후 저장)
-                  비대화식: FLEX_EMAIL/FLEX_PASSWORD env 또는
-                  --password-stdin 으로 stdin 파이프 입력 가능
-  logout          OS 키링에서 비밀번호 삭제 (글로벌 config의 이메일은 보존)
-  status          현재 등록 상태 표시 (비밀번호 값은 마스킹)
-  crawl           카탈로그 기반 크롤링 → output/ 저장
-  import          크롤링 결과(JSON) → SQLite DB 변환
-  query "SQL"     DB 쿼리 실행 → JSON 출력 (read-only)
-                  --file <path>  SQL 파일 경로
-                  --var key=value  {{key}} 플레이스홀더 치환 (반복 가능)
-  file <fileKey>  파일 내용 출력 (--info로 메타데이터만)
-  workflow <sub>  결재 문서 작성/제출 (templates / describe / submit)
-  check-apis      하드코딩된 API 엔드포인트 상태 확인
-  install-skills  에이전트 스킬을 .claude/skills/에 설치
-  update          최신 버전으로 업데이트
-
-Options:
-  --version, -v       버전 출력
-  --password-stdin    (login 전용) 비밀번호를 stdin 파이프로 주입
-
-Env:
-  FLEX_EMAIL                  선택 — 지정 시 글로벌 config보다 우선
-                              (평소엔 \`flex-ax login\`으로 한 번만 등록)
-  FLEX_PASSWORD               선택 — 지정 시 키링/프롬프트보다 우선
-                              (CI에서 사용)
-  FLEX_BASE_URL               기본 https://flex.team
-  FLEX_CUSTOMERS              크롤 대상 법인 customerIdHash (콤마 구분)
-  FLEX_AX_AUTO_UPDATE=false   기동 시 자동 업데이트 비활성화`);
-    process.exit(command === "help" ? 0 : 1);
+    console.error(`[FLEX-AX:ERROR] Unknown command: ${command}`);
+    console.log(getTopLevelHelp());
+    process.exit(1);
 }

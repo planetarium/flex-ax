@@ -17,7 +17,7 @@
     "install-skills": "tsx src/cli.ts install-skills",
     "build": "tsc -p tsconfig.build.json && node scripts/postbuild.cjs",
     "build:exe": "bun build --compile src/cli.ts --outfile bun-dist/flex-ax",
-    "test": "tsx --test src/**/*.test.ts",
+    "test": "tsx --test src/*.test.ts src/**/*.test.ts",
     "lint": "tsc --noEmit",
     "clean": "rimraf output dist"
   },
