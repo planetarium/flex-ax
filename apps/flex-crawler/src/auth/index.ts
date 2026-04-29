@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { CrawlerConfig } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
+import { resolveCredentials, deleteFromKeyring } from "./credentials.js";
 
 /**
  * 토큰 기반 인증 컨텍스트 — Playwright 없이 동작.
@@ -49,49 +50,31 @@ export async function authenticate(
   config: CrawlerConfig,
   logger: Logger,
 ): Promise<AuthContext> {
-  if (!config.flexEmail || !config.flexPassword) {
-    throw new Error("FLEX_EMAIL과 FLEX_PASSWORD 환경 변수가 필요합니다.");
+  if (!config.flexEmail) {
+    throw new Error("FLEX_EMAIL 환경 변수가 필요합니다.");
   }
 
-  const deviceId = randomUUID();
+  // 비밀번호: env > 키링 > 프롬프트
+  let creds = config.flexPassword
+    ? { email: config.flexEmail, password: config.flexPassword, source: "env" as const }
+    : await resolveCredentials(config.flexEmail, logger);
+
+  let authz;
+  let deviceId = randomUUID();
   const baseUrl = config.flexBaseUrl;
-
-  logger.info("로그인 challenge...");
-  const challenge = await postJson<{ sessionId: string }>(
-    `${baseUrl}/api-public/v2/auth/challenge`,
-    { loginAuthzFlow: false },
-    baseHeaders(deviceId),
-  );
-  const sessionHeaders = baseHeaders(deviceId, { "flexteam-v2-login-session-id": challenge.sessionId });
-
-  logger.info("이메일 검증...");
-  await postJson(
-    `${baseUrl}/api-public/v2/auth/verification/identifier`,
-    { identifier: config.flexEmail },
-    sessionHeaders,
-  );
-
-  logger.info("비밀번호 인증...");
-  await postJson(
-    `${baseUrl}/api-public/v2/auth/authentication/password`,
-    { password: config.flexPassword },
-    sessionHeaders,
-  );
-
-  logger.info("토큰 발급...");
-  type AuthorizationResponse = {
-    v2Response: {
-      workspaceToken: {
-        accessToken: { token: string; expireAt: string };
-        refreshToken: { token: string; expireAt: string };
-      };
-    };
-  };
-  const authz = await postJson<AuthorizationResponse>(
-    `${baseUrl}/api-public/v2/auth/authorization`,
-    {},
-    sessionHeaders,
-  );
+  try {
+    authz = await runLoginFlow(baseUrl, deviceId, creds.email, creds.password, logger);
+  } catch (error) {
+    if (creds.source === "keyring" && isAuthFailure(error) && process.stdin.isTTY) {
+      logger.warn("키링에 저장된 비밀번호로 로그인 실패 — 항목을 삭제하고 다시 입력받습니다.");
+      deleteFromKeyring(creds.email);
+      creds = await resolveCredentials(config.flexEmail, logger);
+      deviceId = randomUUID();
+      authz = await runLoginFlow(baseUrl, deviceId, creds.email, creds.password, logger);
+    } else {
+      throw error;
+    }
+  }
 
   // flex-crawler는 단일 법인 경로(현재 사용자 default)로 동작하므로,
   // 로그인 직후 default customer-user pair로 즉시 exchange하여 customerToken을 채운다.
@@ -122,6 +105,57 @@ export async function authenticate(
 
   logger.info("로그인 성공");
   return ctx;
+}
+
+type AuthorizationResponse = {
+  v2Response: {
+    workspaceToken: {
+      accessToken: { token: string; expireAt: string };
+      refreshToken: { token: string; expireAt: string };
+    };
+  };
+};
+
+async function runLoginFlow(
+  baseUrl: string,
+  deviceId: string,
+  email: string,
+  password: string,
+  logger: Logger,
+): Promise<AuthorizationResponse> {
+  logger.info("로그인 challenge...");
+  const challenge = await postJson<{ sessionId: string }>(
+    `${baseUrl}/api-public/v2/auth/challenge`,
+    { loginAuthzFlow: false },
+    baseHeaders(deviceId),
+  );
+  const sessionHeaders = baseHeaders(deviceId, { "flexteam-v2-login-session-id": challenge.sessionId });
+
+  logger.info("이메일 검증...");
+  await postJson(
+    `${baseUrl}/api-public/v2/auth/verification/identifier`,
+    { identifier: email },
+    sessionHeaders,
+  );
+
+  logger.info("비밀번호 인증...");
+  await postJson(
+    `${baseUrl}/api-public/v2/auth/authentication/password`,
+    { password },
+    sessionHeaders,
+  );
+
+  logger.info("토큰 발급...");
+  return await postJson<AuthorizationResponse>(
+    `${baseUrl}/api-public/v2/auth/authorization`,
+    {},
+    sessionHeaders,
+  );
+}
+
+function isAuthFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /HTTP 4(00|01|03)/.test(error.message);
 }
 
 async function switchCustomer(

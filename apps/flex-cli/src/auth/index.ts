@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Config } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
+import { resolveCredentials, deleteFromKeyring } from "./credentials.js";
 
 /**
  * 인증 컨텍스트 — Playwright 없이 토큰만 들고 다닌다.
@@ -63,40 +64,71 @@ async function getJson<T>(url: string, headers: Record<string, string>): Promise
 }
 
 export async function authenticate(config: Config, logger: Logger): Promise<AuthContext> {
-  if (!config.flexEmail || !config.flexPassword) {
-    throw new Error("FLEX_EMAIL과 FLEX_PASSWORD 환경 변수가 필요합니다.");
+  if (!config.flexEmail) {
+    throw new Error("FLEX_EMAIL 환경 변수가 필요합니다.");
   }
 
-  const deviceId = randomUUID();
-  const baseUrl = config.flexBaseUrl;
+  // 비밀번호: env > 키링 > 프롬프트 순으로 해석. config.flexPassword가 비어있을 때만
+  // 키링/프롬프트로 폴백한다 (env 우선 — CI 호환).
+  let creds = config.flexPassword
+    ? { email: config.flexEmail, password: config.flexPassword, source: "env" as const }
+    : await resolveCredentials(config.flexEmail, logger);
 
-  // 1) challenge — 로그인 세션 발급
+  try {
+    return await performLogin(config.flexBaseUrl, creds.email, creds.password, logger);
+  } catch (error) {
+    // 키링에 저장된 비밀번호가 만료/오타로 401을 받은 경우, 자동으로 무효화하고
+    // 프롬프트로 한 번만 재시도한다. env에서 온 비밀번호는 사용자가 명시적으로
+    // 지정한 값이므로 건드리지 않는다.
+    if (creds.source === "keyring" && isAuthFailure(error) && process.stdin.isTTY) {
+      logger.warn("키링에 저장된 비밀번호로 로그인 실패 — 항목을 삭제하고 다시 입력받습니다.");
+      deleteFromKeyring(creds.email);
+      creds = await resolveCredentials(config.flexEmail, logger);
+      return await performLogin(config.flexBaseUrl, creds.email, creds.password, logger);
+    }
+    throw error;
+  }
+}
+
+function isAuthFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /HTTP 4(00|01|03)/.test(error.message);
+}
+
+/**
+ * 5단계 HTTP 로그인 자체. 키 해석/저장과 분리해서 두면 login 명령에서
+ * 입력받은 비밀번호 검증에 그대로 재사용할 수 있다.
+ */
+export async function performLogin(
+  baseUrl: string,
+  email: string,
+  password: string,
+  logger: Logger,
+): Promise<AuthContext> {
+  const deviceId = randomUUID();
+
   logger.info("로그인 challenge...");
   const challenge = await postJson<{ sessionId: string }>(
     `${baseUrl}/api-public/v2/auth/challenge`,
     { loginAuthzFlow: false },
     baseHeaders(deviceId),
   );
-  const sessionId = challenge.sessionId;
-  const sessionHeaders = baseHeaders(deviceId, { "flexteam-v2-login-session-id": sessionId });
+  const sessionHeaders = baseHeaders(deviceId, { "flexteam-v2-login-session-id": challenge.sessionId });
 
-  // 2) identifier(이메일) 검증
   logger.info("이메일 검증...");
   await postJson(
     `${baseUrl}/api-public/v2/auth/verification/identifier`,
-    { identifier: config.flexEmail },
+    { identifier: email },
     sessionHeaders,
   );
 
-  // 3) password
   logger.info("비밀번호 인증...");
   await postJson(
     `${baseUrl}/api-public/v2/auth/authentication/password`,
-    { password: config.flexPassword },
+    { password },
     sessionHeaders,
   );
 
-  // 4) authorization — 워크스페이스 토큰 발급
   logger.info("토큰 발급...");
   type AuthorizationResponse = {
     v2Response: {
@@ -111,15 +143,13 @@ export async function authenticate(config: Config, logger: Logger): Promise<Auth
     {},
     sessionHeaders,
   );
-  const workspaceToken = authz.v2Response.workspaceToken.accessToken.token;
-  const refreshToken = authz.v2Response.workspaceToken.refreshToken.token;
 
   console.log("[FLEX-AX:AUTH] 로그인 성공");
   return {
     baseUrl,
     deviceId,
-    workspaceToken,
-    refreshToken,
+    workspaceToken: authz.v2Response.workspaceToken.accessToken.token,
+    refreshToken: authz.v2Response.workspaceToken.refreshToken.token,
     customerToken: null,
   };
 }

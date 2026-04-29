@@ -3,7 +3,11 @@ import { z } from "zod";
 
 const configSchema = z.object({
   flexEmail: z.string().min(1, "FLEX_EMAIL is required"),
-  flexPassword: z.string().min(1, "FLEX_PASSWORD is required"),
+  /**
+   * env에 비밀번호가 직접 들어있으면 우선 사용한다.
+   * 비어있으면 OS 키링 → 대화형 프롬프트 순으로 fallback (auth/credentials.ts).
+   */
+  flexPassword: z.string().default(""),
   flexBaseUrl: z.string().url().default("https://flex.team"),
   outputDir: z.string().default("./output"),
   requestDelayMs: z.coerce.number().int().min(0).default(1000),

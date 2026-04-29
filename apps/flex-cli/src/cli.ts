@@ -20,6 +20,16 @@ if (command && command !== "update" && command !== "help") {
 }
 
 switch (command) {
+  case "login": {
+    const { runLogin } = await import("./commands/login.js");
+    await runLogin();
+    break;
+  }
+  case "logout": {
+    const { runLogout } = await import("./commands/logout.js");
+    await runLogout();
+    break;
+  }
   case "crawl": {
     const { runCrawl } = await import("./commands/crawl.js");
     await runCrawl();
@@ -62,6 +72,8 @@ switch (command) {
     console.log(`Usage: flex-ax <command>
 
 Commands:
+  login           OS 키링에 비밀번호 저장 (검증 후 저장)
+  logout          OS 키링에서 비밀번호 삭제
   crawl           카탈로그 기반 크롤링 → output/ 저장
   import          크롤링 결과(JSON) → SQLite DB 변환
   query "SQL"     DB 쿼리 실행 → JSON 출력 (read-only)
@@ -76,7 +88,9 @@ Options:
   --version, -v   버전 출력
 
 Env:
-  FLEX_EMAIL, FLEX_PASSWORD   필수 — flex 로그인 자격
+  FLEX_EMAIL                  필수 — flex 로그인 이메일
+  FLEX_PASSWORD               선택 — 지정 시 키링/프롬프트보다 우선
+                              (CI에서 사용, 평소엔 \`flex-ax login\` 권장)
   FLEX_BASE_URL               기본 https://flex.team
   FLEX_CUSTOMERS              크롤 대상 법인 customerIdHash (콤마 구분)
   FLEX_AX_AUTO_UPDATE=false   기동 시 자동 업데이트 비활성화`);

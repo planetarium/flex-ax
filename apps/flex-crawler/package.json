@@ -11,6 +11,7 @@
     "clean": "rimraf output dist"
   },
   "dependencies": {
+    "@napi-rs/keyring": "^1.1.7",
     "dotenv": "^16.4.7",
     "zod": "^3.24.2"
   },
