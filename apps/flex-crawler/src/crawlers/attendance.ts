@@ -91,7 +91,7 @@ export async function crawlAttendanceApprovals(
           });
         }
 
-        await delay(config.requestDelayMs);
+        if (config.requestDelayMs > 0) await delay(config.requestDelayMs);
       }
     } catch (error) {
       // API가 존재하지 않거나 권한이 없는 경우 무시

@@ -3,8 +3,14 @@ import type { CrawlerConfig } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
 import type { StorageWriter } from "../storage/index.js";
 import type { WorkflowTemplate, TemplateField } from "../types/template.js";
-import { type CrawlResult, delay, emptyCrawlResult, nowISO, withRetry } from "./shared.js";
-import { flexFetch } from "./shared.js";
+import {
+  type CrawlResult,
+  emptyCrawlResult,
+  nowISO,
+  withRetry,
+  flexFetch,
+  pooledMap,
+} from "./shared.js";
 
 export async function crawlTemplates(
   authCtx: AuthContext,
@@ -28,19 +34,17 @@ export async function crawlTemplates(
 
     const rawTemplates = data.templates ?? [];
     result.totalCount = rawTemplates.length;
-    logger.info(`양식 ${rawTemplates.length}건 발견`);
+    logger.info(`양식 ${rawTemplates.length}건 발견 (concurrency=${config.concurrency})`);
 
-    for (let i = 0; i < rawTemplates.length; i++) {
-      const raw = rawTemplates[i];
+    let processed = 0;
+    await pooledMap(rawTemplates, config.concurrency, async (raw) => {
       try {
-        logger.progress("양식 수집", i + 1, rawTemplates.length);
-
-        // 템플릿 상세 API 호출
         const detail = await withRetry(
-          () => flexFetch<{ template: RawTemplateDetail }>(
-            authCtx,
-            `${config.flexBaseUrl}/api/v3/approval-document-template/templates/${raw.templateKey}`,
-          ),
+          () =>
+            flexFetch<{ template: RawTemplateDetail }>(
+              authCtx,
+              `${config.flexBaseUrl}/api/v3/approval-document-template/templates/${raw.templateKey}`,
+            ),
           { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
         );
 
@@ -48,7 +52,7 @@ export async function crawlTemplates(
         await storage.saveTemplate(template);
         result.successCount++;
       } catch (error) {
-        // 상세 API 실패 시 목록 데이터로 저장
+        // 상세 실패 시 목록 데이터만으로라도 저장.
         try {
           const template = mapTemplate(raw, null);
           await storage.saveTemplate(template);
@@ -65,10 +69,11 @@ export async function crawlTemplates(
             error: error instanceof Error ? error.message : String(error),
           });
         }
+      } finally {
+        processed++;
+        logger.progress("양식 수집", processed, rawTemplates.length);
       }
-
-      if (i < rawTemplates.length - 1) await delay(config.requestDelayMs);
-    }
+    });
   } catch (error) {
     logger.error("양식 목록 수집 실패", {
       error: error instanceof Error ? error.message : String(error),
