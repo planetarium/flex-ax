@@ -172,7 +172,8 @@ export async function performLogin(
     sessionHeaders,
   );
 
-  console.log("[FLEX-AX:AUTH] 로그인 성공");
+  // logger와 동일하게 stderr로 — stdout은 명령 결과물 전용으로 비워둔다
+  process.stderr.write("[FLEX-AX:AUTH] 로그인 성공\n");
   return {
     baseUrl,
     deviceId,

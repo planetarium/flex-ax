@@ -44,26 +44,29 @@ function writeLogLine(line: string): void {
 export function createLogger(prefix?: string): Logger {
   const tag = prefix ? `[FLEX-AX:${prefix}]` : "";
 
+  // 모든 진행 로그(info/warn/error/progress)는 stderr로 보낸다.
+  // stdout은 명령의 "결과물"(query 결과 JSON, workflow describe YAML, workflow templates 목록 등)
+  // 전용으로 남겨야 redirect/pipe 시 결과물이 로그로 오염되지 않는다.
   return {
     info(message, meta) {
       const line = `[${timestamp()}] INFO  ${tag} ${message}${formatMeta(meta)}`;
-      console.log(line);
+      process.stderr.write(`${line}\n`);
       writeLogLine(line);
     },
     warn(message, meta) {
       const line = `[${timestamp()}] WARN  ${tag} ${message}${formatMeta(meta)}`;
-      console.warn(line);
+      process.stderr.write(`${line}\n`);
       writeLogLine(line);
     },
     error(message, meta) {
       const line = `[${timestamp()}] ERROR ${tag} ${message}${formatMeta(meta)}`;
-      console.error(line);
+      process.stderr.write(`${line}\n`);
       writeLogLine(line);
     },
     progress(phase, current, total) {
       const totalStr = total != null ? `/${total}` : "";
       const line = `[${timestamp()}] ${phase}: ${current}${totalStr}`;
-      process.stdout.write(`\r${line}`);
+      process.stderr.write(`\r${line}`);
       writeLogLine(line);
     },
   };
