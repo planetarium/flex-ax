@@ -14,10 +14,10 @@ const TOP_LEVEL_COMMANDS = `Commands:
                   attendance | document | people | workflow
   attendance <sub>
                   내 휴가/근무 기록 라이브 조회 (별칭)
-  document <sub>  결재 문서 라이브 조회 (별칭)
+  document <sub>  문서 명령 (legacy: 결재 문서 조회는 workflow 사용 권장)
   people <sub>    구성원/부서 라이브 조회 (별칭)
   file <fileKey>  파일 내용 출력 (--info로 메타데이터만)
-  workflow <sub>  결재 문서 작성/제출 (templates / describe / submit)
+  workflow <sub>  결재 문서 조회/작성/제출
   check-apis      하드코딩된 API 엔드포인트 상태 확인
   install-skills  에이전트 스킬을 .claude/skills/에 설치
   update          최신 버전으로 업데이트`;
@@ -76,8 +76,8 @@ flex.team 원격 조회/실행 명령의 공통 진입점입니다.`,
 권장: flex-ax live attendance ...`,
   document: `Usage: flex-ax document <list|show|attachments> [...]
 
-결재 문서와 첨부파일 메타데이터를 flex API에서 바로 조회합니다.
-권장: flex-ax live document ...`,
+Deprecated: 결재 문서 조회는 workflow list/show/attachments/status 를 사용하세요.
+문서·증명서 메뉴용 회사 문서/증명서 명령은 별도 서브커맨드로 추가될 예정입니다.`,
   people: `Usage: flex-ax people <list|show|departments> [...]
 
 구성원과 부서 정보를 flex API에서 바로 조회합니다.
@@ -85,9 +85,9 @@ flex.team 원격 조회/실행 명령의 공통 진입점입니다.`,
   file: `Usage: flex-ax file <fileKey> [--info]
 
 수집된 파일 본문을 출력하거나 --info 로 메타데이터만 확인합니다.`,
-  workflow: `Usage: flex-ax workflow <templates|describe|submit> [...]
+  workflow: `Usage: flex-ax workflow <templates|describe|submit|list|show|status|attachments> [...]
 
-결재 문서 작성/제출 워크플로를 실행합니다.
+결재 문서 조회/작성/제출 워크플로를 실행합니다.
 권장: flex-ax live workflow ...`,
   "check-apis": `Usage: flex-ax check-apis
 
