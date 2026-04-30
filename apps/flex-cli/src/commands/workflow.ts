@@ -26,6 +26,7 @@ import {
 } from "../workflow/io.js";
 import type { ResolvedPolicy, UploadedAttachment } from "../workflow/types.js";
 import { resolveTargetCorporation } from "./live-common.js";
+import { getWorkflowReadUsage, runWorkflowReadCommand } from "./workflow-read.js";
 
 /**
  * `flex-ax workflow {templates|describe|submit}` 디스패처.
@@ -43,6 +44,12 @@ export async function runWorkflow(argv: string[] = process.argv.slice(3)): Promi
       return;
     case "submit":
       await cmdSubmit(rest);
+      return;
+    case "list":
+    case "show":
+    case "attachments":
+    case "status":
+      await runWorkflowReadCommand(sub, rest, "WORKFLOW");
       return;
     case undefined:
     case "help":
@@ -64,16 +71,24 @@ Subcommands:
   templates                       작성 가능한 양식 목록 출력
   describe <key|이름> [> file]    양식 명세를 입력 YAML 형태로 출력
   submit <file>                   채운 YAML로 결재 문서 작성/제출
+  list                            결재 문서 목록 조회
+  show <documentKey>              결재 문서 상세 조회
+  status <documentKey>            결재 상태/결재선 요약 조회
+  attachments <documentKey>       첨부파일 목록 조회
 
 Options (모든 서브커맨드 공통):
   --customer <customerIdHash>     다중 법인일 때 대상 법인 지정
   --draft                         (submit 전용) 임시저장까지만 (제출 호출 생략)
   --dry-run                       (submit 전용) 호출하지 않고 페이로드만 stdout
 
+${getWorkflowReadUsage("workflow")}
+
 Examples:
   flex-ax workflow templates
   flex-ax workflow describe "비용 결제 요청" > request.yaml
   flex-ax workflow submit ./request.yaml --draft
+  flex-ax workflow list --box in-progress
+  flex-ax workflow status 8d2f...
 `);
 }
 

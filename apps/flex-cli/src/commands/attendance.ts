@@ -40,6 +40,105 @@ interface TimeOffUsesResponse {
   nextCursor?: string;
 }
 
+interface WorkSchedulesResponse {
+  userIdHash: string;
+  dailySchedules?: WorkDailySchedule[];
+}
+
+interface WorkDailySchedule {
+  date: string;
+  timezone?: string;
+  dayOffs?: unknown[];
+  timeBlocks?: unknown[];
+  legalTimeBlocks?: unknown[];
+  approvals?: unknown[];
+}
+
+interface WorkClockResponse {
+  records?: unknown[];
+}
+
+interface WorkingPeriodsResponse {
+  periods?: unknown[];
+}
+
+interface TimeOffBalancesResponse {
+  groupedBucketsItems?: TimeOffGroupedBucket[];
+  annualTimeOffPolicy?: unknown;
+  customerTimeOffForms?: unknown[];
+}
+
+interface TimeOffGroupedBucket {
+  buckets?: TimeOffBucket[];
+  totalRemainingTimeOffTimes?: unknown;
+  totalRemainingTimeOffTime?: unknown;
+  totalUsableTimeOffTimes?: unknown;
+  totalUsableTimeOffTime?: unknown;
+  timeOffGroupedBucketMetaDataDto?: {
+    timeOffPolicyId?: string;
+    timeOffPolicyType?: string;
+    displayName?: string;
+    name?: string;
+    displayInfo?: {
+      name?: string;
+      description?: string;
+      emoji?: unknown;
+      icon?: unknown;
+    };
+  };
+}
+
+interface TimeOffBucket {
+  timeOffPolicyId?: string;
+  timeOffPolicyType?: string;
+  assignedAt?: string;
+  validUsageFrom?: string;
+  validUsageTo?: string;
+  expirationDate?: string;
+  assignedTime?: number;
+  usedTime?: number;
+  remainingTime?: unknown;
+  remainingAmount?: unknown;
+  assignMethod?: string;
+  minimumUsageLimit?: string;
+  usageGenderLimit?: string;
+  certificateSubmissionLimit?: string;
+  holidayUsageCounted?: boolean;
+}
+
+interface TimeOffFormsResponse {
+  timeOffForms?: Array<{
+    customerTimeOffForm?: TimeOffForm;
+    updatable?: boolean;
+  }>;
+}
+
+interface TimeOffForm {
+  customerIdHash?: string;
+  timeOffPolicyId?: string;
+  timeOffPolicyType?: string;
+  category?: string;
+  legalMandatory?: boolean;
+  active?: boolean;
+  paid?: unknown;
+  displayInfo?: {
+    name?: string;
+    description?: string;
+    displayOrder?: number;
+    emoji?: unknown;
+    icon?: unknown;
+  };
+  approval?: {
+    enabled?: boolean;
+    templateKey?: string;
+    cancelEnabled?: boolean;
+    cancelTemplateKey?: string;
+  };
+  assignMethod?: string;
+  minimumUsageMinutes?: number;
+  certificateDescription?: string;
+}
+
 export async function runAttendance(argv: string[] = process.argv.slice(3)): Promise<void> {
   const [sub, ...rest] = argv;
 
@@ -49,6 +148,15 @@ export async function runAttendance(argv: string[] = process.argv.slice(3)): Pro
       return;
     case "show":
       await cmdShow(rest);
+      return;
+    case "work-records":
+      await cmdWorkRecords(rest);
+      return;
+    case "balances":
+      await cmdBalances(rest);
+      return;
+    case "policies":
+      await cmdPolicies(rest);
       return;
     case undefined:
     case "help":
@@ -69,6 +177,9 @@ function printUsage(): void {
 Subcommands:
   list                          내 휴가/근태 사용 내역 조회
   show <eventId>                특정 휴가/근태 이벤트 상세 조회
+  work-records                  내 근무 일정/기록 조회
+  balances                      사용 가능한 휴가 잔여량 조회
+  policies                      휴가 정책/유형 목록 조회
 
 Options:
   --customer <customerIdHash>   대상 법인 지정
@@ -82,6 +193,9 @@ Examples:
   flex-ax attendance list
   flex-ax attendance list --from 2026-01-01 --to 2026-04-30 --status approved
   flex-ax attendance show abc123
+  flex-ax attendance work-records --from 2026-04-01 --to 2026-04-30
+  flex-ax attendance balances
+  flex-ax attendance policies
 `);
 }
 
@@ -156,6 +270,87 @@ async function cmdShow(args: string[]): Promise<void> {
       process.exit(1);
     }
     console.log(JSON.stringify(toAttendanceDetail(found), null, 2));
+  });
+}
+
+async function cmdWorkRecords(args: string[]): Promise<void> {
+  const opts = parseOpts(args, 100);
+  await withLiveCommandContext("ATTENDANCE", opts, async ({ authCtx, config }) => {
+    const userId = await getCurrentUserId(authCtx, config.flexBaseUrl, config.maxRetries, config.requestDelayMs);
+    const range = resolveDateRange(opts.from, opts.to, "month");
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Seoul";
+
+    const [schedules, workClock, workingPeriods] = await Promise.all([
+      fetchWorkSchedules(authCtx, config.flexBaseUrl, userId, range, timezone, config.maxRetries, config.requestDelayMs),
+      fetchWorkClockRecords(authCtx, config.flexBaseUrl, userId, range, config.maxRetries, config.requestDelayMs),
+      fetchWorkingPeriods(authCtx, config.flexBaseUrl, userId, range, config.maxRetries, config.requestDelayMs),
+    ]);
+
+    console.log(
+      JSON.stringify(
+        {
+          userIdHash: userId,
+          from: range.from,
+          to: range.to,
+          timezone,
+          dailySchedules: (schedules.dailySchedules ?? []).map(toWorkScheduleSummary),
+          workClockRecords: workClock.records ?? [],
+          workingPeriods: workingPeriods.periods ?? [],
+        },
+        null,
+        2,
+      ),
+    );
+  });
+}
+
+async function cmdBalances(args: string[]): Promise<void> {
+  const opts = parseOpts(args, 100);
+  await withLiveCommandContext("ATTENDANCE", opts, async ({ authCtx, config }) => {
+    const userId = await getCurrentUserId(authCtx, config.flexBaseUrl, config.maxRetries, config.requestDelayMs);
+    const timestamp = opts.to ? toEpochMs(opts.to, false) : Date.now();
+    const balances = await fetchTimeOffBalances(
+      authCtx,
+      config.flexBaseUrl,
+      userId,
+      timestamp,
+      config.maxRetries,
+      config.requestDelayMs,
+    );
+    console.log(
+      JSON.stringify(
+        {
+          userIdHash: userId,
+          timestamp,
+          asOf: new Date(timestamp).toISOString(),
+          balances: (balances.groupedBucketsItems ?? []).map(toTimeOffBalanceSummary),
+          annualTimeOffPolicy: balances.annualTimeOffPolicy ?? null,
+        },
+        null,
+        2,
+      ),
+    );
+  });
+}
+
+async function cmdPolicies(args: string[]): Promise<void> {
+  const opts = parseOpts(args, 100);
+  await withLiveCommandContext("ATTENDANCE", opts, async ({ authCtx, config, corp }) => {
+    const policies = await fetchTimeOffPolicies(
+      authCtx,
+      config.flexBaseUrl,
+      corp.customerIdHash,
+      config.maxRetries,
+      config.requestDelayMs,
+    );
+    const normalizedType = opts.type?.trim().toUpperCase();
+    const rows = (policies.timeOffForms ?? [])
+      .map((entry) => entry.customerTimeOffForm)
+      .filter((form): form is TimeOffForm => Boolean(form))
+      .filter((form) => !normalizedType || form.timeOffPolicyType?.toUpperCase() === normalizedType)
+      .slice(0, opts.limit)
+      .map(toTimeOffPolicySummary);
+    console.log(JSON.stringify(rows, null, 2));
   });
 }
 
@@ -244,6 +439,105 @@ async function collectAttendanceRecords(
   return collected;
 }
 
+async function fetchWorkSchedules(
+  authCtx: Parameters<typeof flexFetch>[0],
+  baseUrl: string,
+  userId: string,
+  range: DateRange,
+  timezone: string,
+  maxRetries: number,
+  delayMs: number,
+): Promise<WorkSchedulesResponse> {
+  const params = new URLSearchParams({
+    from: range.from,
+    to: range.to,
+    timezone,
+  });
+  return withRetry(
+    () =>
+      flexFetch<WorkSchedulesResponse>(
+        authCtx,
+        `${baseUrl}/api/v3/time-tracking/users/${userId}/work-schedules?${params.toString()}`,
+      ),
+    { maxRetries, delayMs },
+  );
+}
+
+async function fetchWorkClockRecords(
+  authCtx: Parameters<typeof flexFetch>[0],
+  baseUrl: string,
+  userId: string,
+  range: DateRange,
+  maxRetries: number,
+  delayMs: number,
+): Promise<WorkClockResponse> {
+  const params = new URLSearchParams({
+    userIdHashes: userId,
+    timeStampFrom: String(toEpochMs(range.from, true)),
+    timeStampTo: String(toEpochMs(range.to, false)),
+  });
+  return withRetry(
+    () => flexFetch<WorkClockResponse>(authCtx, `${baseUrl}/api/v2/time-tracking/work-clock/users?${params.toString()}`),
+    { maxRetries, delayMs },
+  );
+}
+
+async function fetchWorkingPeriods(
+  authCtx: Parameters<typeof flexFetch>[0],
+  baseUrl: string,
+  userId: string,
+  range: DateRange,
+  maxRetries: number,
+  delayMs: number,
+): Promise<WorkingPeriodsResponse> {
+  return withRetry(
+    () =>
+      flexFetch<WorkingPeriodsResponse>(
+        authCtx,
+        `${baseUrl}/api/v2/work-rule/users/${userId}/working-periods/by-timestamp-range/${toEpochMs(
+          range.from,
+          true,
+        )}..${toEpochMs(range.to, false)}`,
+      ),
+    { maxRetries, delayMs },
+  );
+}
+
+async function fetchTimeOffBalances(
+  authCtx: Parameters<typeof flexFetch>[0],
+  baseUrl: string,
+  userId: string,
+  timestamp: number,
+  maxRetries: number,
+  delayMs: number,
+): Promise<TimeOffBalancesResponse> {
+  return withRetry(
+    () =>
+      flexFetch<TimeOffBalancesResponse>(
+        authCtx,
+        `${baseUrl}/api/v2/time-off/users/${userId}/usable-grouped-time-off-buckets/by-time-stamp/${timestamp}`,
+      ),
+    { maxRetries, delayMs },
+  );
+}
+
+async function fetchTimeOffPolicies(
+  authCtx: Parameters<typeof flexFetch>[0],
+  baseUrl: string,
+  customerIdHash: string,
+  maxRetries: number,
+  delayMs: number,
+): Promise<TimeOffFormsResponse> {
+  return withRetry(
+    () =>
+      flexFetch<TimeOffFormsResponse>(
+        authCtx,
+        `${baseUrl}/api/v2/time-off/customers/${customerIdHash}/time-off-forms?includeInactivatedTimeOffForms=true`,
+      ),
+    { maxRetries, delayMs },
+  );
+}
+
 function toAttendanceSummary(record: TimeOffUse): Record<string, unknown> {
   return {
     id: record.userTimeOffRegisterEventId,
@@ -274,11 +568,102 @@ function toAttendanceDetail(record: TimeOffUse): Record<string, unknown> {
   };
 }
 
+function toWorkScheduleSummary(schedule: WorkDailySchedule): Record<string, unknown> {
+  return {
+    date: schedule.date,
+    timezone: schedule.timezone ?? null,
+    timeBlocks: schedule.timeBlocks ?? [],
+    legalTimeBlocks: schedule.legalTimeBlocks ?? [],
+    dayOffs: schedule.dayOffs ?? [],
+    approvals: schedule.approvals ?? [],
+  };
+}
+
+function toTimeOffBalanceSummary(item: TimeOffGroupedBucket): Record<string, unknown> {
+  const meta = item.timeOffGroupedBucketMetaDataDto;
+  const firstBucket = item.buckets?.[0];
+  return {
+    policyId: meta?.timeOffPolicyId ?? firstBucket?.timeOffPolicyId ?? null,
+    type: meta?.timeOffPolicyType ?? firstBucket?.timeOffPolicyType ?? null,
+    name: meta?.displayInfo?.name ?? meta?.displayName ?? meta?.name ?? null,
+    remaining: item.totalRemainingTimeOffTime ?? item.totalRemainingTimeOffTimes ?? null,
+    usable: item.totalUsableTimeOffTime ?? item.totalUsableTimeOffTimes ?? null,
+    buckets: (item.buckets ?? []).map(toTimeOffBucketSummary),
+  };
+}
+
+function toTimeOffBucketSummary(bucket: TimeOffBucket): Record<string, unknown> {
+  return {
+    policyId: bucket.timeOffPolicyId ?? null,
+    type: bucket.timeOffPolicyType ?? null,
+    assignedAt: bucket.assignedAt ?? null,
+    validUsageFrom: bucket.validUsageFrom ?? null,
+    validUsageTo: bucket.validUsageTo ?? null,
+    expirationDate: bucket.expirationDate ?? null,
+    assignedTime: bucket.assignedTime ?? null,
+    usedTime: bucket.usedTime ?? null,
+    remaining: bucket.remainingTime ?? bucket.remainingAmount ?? null,
+    assignMethod: bucket.assignMethod ?? null,
+    minimumUsageLimit: bucket.minimumUsageLimit ?? null,
+    usageGenderLimit: bucket.usageGenderLimit ?? null,
+    certificateSubmissionLimit: bucket.certificateSubmissionLimit ?? null,
+    holidayUsageCounted: bucket.holidayUsageCounted ?? false,
+  };
+}
+
+function toTimeOffPolicySummary(form: TimeOffForm): Record<string, unknown> {
+  return {
+    policyId: form.timeOffPolicyId ?? null,
+    type: form.timeOffPolicyType ?? null,
+    name: form.displayInfo?.name ?? null,
+    description: form.displayInfo?.description ?? null,
+    category: form.category ?? null,
+    active: form.active ?? null,
+    paid: form.paid ?? null,
+    legalMandatory: form.legalMandatory ?? false,
+    approval: form.approval ?? null,
+    assignMethod: form.assignMethod ?? null,
+    minimumUsageMinutes: form.minimumUsageMinutes ?? null,
+    certificateDescription: form.certificateDescription ?? null,
+  };
+}
+
 function buildTimeOffUsesUrl(baseUrl: string, continuationToken?: string, nextCursor?: string): string {
   const url = new URL(baseUrl);
   if (continuationToken) url.searchParams.set("continuationToken", continuationToken);
   if (nextCursor) url.searchParams.set("nextCursor", nextCursor);
   return url.toString();
+}
+
+interface DateRange {
+  from: string;
+  to: string;
+}
+
+function resolveDateRange(from: string | undefined, to: string | undefined, defaultRange: "year" | "month"): DateRange {
+  if (from && to) {
+    return { from, to };
+  }
+
+  const now = new Date();
+  const defaultFrom = new Date(now);
+  if (defaultRange === "year") {
+    defaultFrom.setFullYear(now.getFullYear() - 1);
+  } else {
+    defaultFrom.setDate(1);
+  }
+
+  return {
+    from: from ?? toDateString(defaultFrom),
+    to: to ?? toDateString(now),
+  };
+}
+
+function toDateString(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function toEpochMs(input: string | undefined, startOfDay: boolean): number {
