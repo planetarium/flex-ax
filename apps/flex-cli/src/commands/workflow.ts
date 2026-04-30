@@ -25,6 +25,7 @@ import {
   type WorkflowInput,
 } from "../workflow/io.js";
 import type { ResolvedPolicy, UploadedAttachment } from "../workflow/types.js";
+import { resolveTargetCorporation } from "./live-common.js";
 
 /**
  * `flex-ax workflow {templates|describe|submit}` 디스패처.
@@ -136,36 +137,7 @@ async function setupAuth(
     process.exit(1);
   }
 
-  // --customer > FLEX_CUSTOMERS env > 단일 법인 자동선택 > 다중인데 미지정이면 에러
-  let target: Corporation;
-  if (opts.customer) {
-    const found = corporations.find((c) => c.customerIdHash === opts.customer);
-    if (!found) {
-      await cleanup(authCtx);
-      logger.error("--customer로 지정한 법인이 접근 가능 목록에 없습니다", {
-        requested: opts.customer,
-        available: corporations.map((c) => c.customerIdHash),
-      });
-      process.exit(1);
-    }
-    target = found;
-  } else if (config.customers.length === 1) {
-    const found = corporations.find((c) => c.customerIdHash === config.customers[0]);
-    if (!found) {
-      await cleanup(authCtx);
-      logger.error("FLEX_CUSTOMERS env로 지정한 법인이 접근 가능 목록에 없습니다");
-      process.exit(1);
-    }
-    target = found;
-  } else if (corporations.length === 1) {
-    target = corporations[0];
-  } else {
-    await cleanup(authCtx);
-    logger.error("법인이 여러 개입니다 — --customer <customerIdHash> 로 명시하세요", {
-      candidates: corporations.map((c) => ({ id: c.customerIdHash, name: c.name })),
-    });
-    process.exit(1);
-  }
+  const target = resolveTargetCorporation(corporations, opts, config, logger);
 
   await switchCustomer(authCtx, config.flexBaseUrl, target.customerIdHash, target.userIdHash);
   logger.info("법인 컨텍스트 설정", { name: target.name, customerIdHash: target.customerIdHash });
@@ -383,4 +355,3 @@ function serializeForDryRun(
     },
   };
 }
-

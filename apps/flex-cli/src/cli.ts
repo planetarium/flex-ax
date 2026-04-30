@@ -70,6 +70,21 @@ switch (command) {
     await runQuery();
     break;
   }
+  case "attendance": {
+    const { runAttendance } = await import("./commands/attendance.js");
+    await runAttendance();
+    break;
+  }
+  case "document": {
+    const { runDocument } = await import("./commands/document.js");
+    await runDocument();
+    break;
+  }
+  case "people": {
+    const { runPeople } = await import("./commands/people.js");
+    await runPeople();
+    break;
+  }
   case "file": {
     const { runFile } = await import("./commands/file.js");
     await runFile();
