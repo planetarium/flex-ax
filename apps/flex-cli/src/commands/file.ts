@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { Database } from "bun:sqlite";
 import { createReadStream } from "node:fs";
 import { loadConfig } from "../config/index.js";
 import { resolveFlexDataDir } from "../paths/index.js";
@@ -32,7 +32,7 @@ export async function runFile(): Promise<void> {
   }
   const dbPath = path.resolve(resolved.resolvedPath, "flex-ax.db");
 
-  let db: InstanceType<typeof Database>;
+  let db: Database;
   try {
     db = new Database(dbPath, { readonly: true });
   } catch {
