@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { Database } from "bun:sqlite";
 import { loadConfig } from "../config/index.js";
 import { resolveFlexDataDir } from "../paths/index.js";
 import path from "node:path";
@@ -128,7 +128,7 @@ SQL을 실행하고 결과를 JSON으로 출력합니다 (read-only).
   }
   const dbPath = path.resolve(resolved.resolvedPath, "flex-ax.db");
 
-  let db: InstanceType<typeof Database>;
+  let db: Database;
   try {
     db = new Database(dbPath, { readonly: true });
   } catch {

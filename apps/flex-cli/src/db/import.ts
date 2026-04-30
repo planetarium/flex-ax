@@ -1,12 +1,13 @@
-import Database from "better-sqlite3";
+import { Database, type Statement } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Logger } from "../logger/index.js";
 import { importEndpoints } from "./import-endpoints.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Inline the schema as a text import so it survives `bun build --compile`,
+// where reading sibling files at runtime resolves to a virtual `/$bunfs` path
+// that doesn't exist on disk.
+import schemaSql from "./schema.sql" with { type: "text" };
 
 export interface ImportResult {
   templates: number;
@@ -32,14 +33,12 @@ export async function importToSqlite(
   };
 
   // DB 초기화
-  const db = new Database(dbPath);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = OFF"); // 임포트 순서 무관하게 처리, 완료 후 체크
+  const db = new Database(dbPath, { create: true });
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA foreign_keys = OFF"); // 임포트 순서 무관하게 처리, 완료 후 체크
 
-  // schema.sql 로드
-  const schemaPath = path.join(__dirname, "schema.sql");
-  const schema = await readFile(schemaPath, "utf-8");
-  db.exec(schema);
+  // schema.sql 적용 (빌드 시점에 텍스트로 인라인됨)
+  db.exec(schemaSql);
 
   // 사용자 수집용
   const users = new Map<string, { name: string; aliases: Set<string> }>();
@@ -238,7 +237,7 @@ export async function importToSqlite(
   }
 
   // FK 무결성 체크
-  const fkErrors = db.pragma("foreign_key_check") as unknown[];
+  const fkErrors = db.query("PRAGMA foreign_key_check").all() as unknown[];
   if (fkErrors.length > 0) {
     logger.warn(`FK 무결성 위반 ${fkErrors.length}건 (참조 누락)`);
   }
@@ -250,7 +249,7 @@ export async function importToSqlite(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function importInstance(
   data: any,
-  stmts: Record<string, Database.Statement>,
+  stmts: Record<string, Statement>,
   result: ImportResult,
   upsertUser: (id: string | undefined, name: string) => void,
 ): void {
