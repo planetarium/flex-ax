@@ -124,6 +124,11 @@ addPassthroughCommand(live, "people", "구성원/부서 라이브 조회", async
   await runPeople(args);
 });
 
+addPassthroughCommand(live, "workflow", "결재 문서 워크플로 라이브 실행", async (args) => {
+  const { runWorkflow } = await import("./commands/workflow.js");
+  await runWorkflow(args);
+});
+
 addPassthroughCommand(program, "attendance", "내 휴가/근태 사용 내역 라이브 조회", async (args) => {
   const { runAttendance } = await import("./commands/attendance.js");
   await runAttendance(args);
