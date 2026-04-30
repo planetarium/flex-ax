@@ -103,9 +103,14 @@ jobs:
           mkdir -p dist
           find release-assets -type f -exec cp {} dist/ \;
 
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#flex-cli@}" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
         with:
-          name: "flex-cli ${GITHUB_REF_NAME#flex-cli@}"
+          name: "flex-cli ${{ steps.version.outputs.version }}"
           files: dist/*
           generate_release_notes: true
