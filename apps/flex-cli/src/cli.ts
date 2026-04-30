@@ -42,7 +42,7 @@ function addPassthroughCommand(
   parent: Command,
   name: string,
   summary: string,
-  runner: () => Promise<void>,
+  runner: (args: string[]) => Promise<void>,
 ): void {
   parent
     .command(`${name} [args...]`)
@@ -58,7 +58,7 @@ function addPassthroughCommand(
 async function runDelegatedCommand(
   commandName: string,
   args: string[],
-  runner: () => Promise<void>,
+  runner: (args: string[]) => Promise<void>,
 ): Promise<void> {
   if (
     commandName !== "update" &&
@@ -69,18 +69,12 @@ async function runDelegatedCommand(
     await maybeAutoUpdate(originalArgs);
   }
 
-  const savedArgv = process.argv;
-  process.argv = [...process.argv.slice(0, 2), commandName, ...args];
-  try {
-    await runner();
-  } finally {
-    process.argv = savedArgv;
-  }
+  await runner(args);
 }
 
-addPassthroughCommand(program, "login", "이메일/비밀번호 등록", async () => {
+addPassthroughCommand(program, "login", "이메일/비밀번호 등록", async (args) => {
   const { runLogin } = await import("./commands/login.js");
-  await runLogin();
+  await runLogin(args);
 });
 
 addPassthroughCommand(program, "logout", "OS 키링에서 비밀번호 삭제", async () => {
@@ -103,9 +97,9 @@ addPassthroughCommand(program, "import", "크롤링 결과를 SQLite로 변환",
   await runImport();
 });
 
-addPassthroughCommand(program, "query", "DB 쿼리 실행", async () => {
+addPassthroughCommand(program, "query", "DB 쿼리 실행", async (args) => {
   const { runQuery } = await import("./commands/query.js");
-  await runQuery();
+  await runQuery(args);
 });
 
 const live = program
@@ -115,44 +109,44 @@ const live = program
   .enablePositionalOptions()
   .showHelpAfterError();
 
-addPassthroughCommand(live, "attendance", "휴가/근태 라이브 조회", async () => {
+addPassthroughCommand(live, "attendance", "휴가/근태 라이브 조회", async (args) => {
   const { runAttendance } = await import("./commands/attendance.js");
-  await runAttendance();
+  await runAttendance(args);
 });
 
-addPassthroughCommand(live, "document", "결재 문서 라이브 조회", async () => {
+addPassthroughCommand(live, "document", "결재 문서 라이브 조회", async (args) => {
   const { runDocument } = await import("./commands/document.js");
-  await runDocument();
+  await runDocument(args);
 });
 
-addPassthroughCommand(live, "people", "구성원/부서 라이브 조회", async () => {
+addPassthroughCommand(live, "people", "구성원/부서 라이브 조회", async (args) => {
   const { runPeople } = await import("./commands/people.js");
-  await runPeople();
+  await runPeople(args);
 });
 
-addPassthroughCommand(program, "attendance", "내 휴가/근태 사용 내역 라이브 조회", async () => {
+addPassthroughCommand(program, "attendance", "내 휴가/근태 사용 내역 라이브 조회", async (args) => {
   const { runAttendance } = await import("./commands/attendance.js");
-  await runAttendance();
+  await runAttendance(args);
 });
 
-addPassthroughCommand(program, "document", "결재 문서 라이브 조회", async () => {
+addPassthroughCommand(program, "document", "결재 문서 라이브 조회", async (args) => {
   const { runDocument } = await import("./commands/document.js");
-  await runDocument();
+  await runDocument(args);
 });
 
-addPassthroughCommand(program, "people", "구성원/부서 라이브 조회", async () => {
+addPassthroughCommand(program, "people", "구성원/부서 라이브 조회", async (args) => {
   const { runPeople } = await import("./commands/people.js");
-  await runPeople();
+  await runPeople(args);
 });
 
-addPassthroughCommand(program, "file", "파일 내용 출력", async () => {
+addPassthroughCommand(program, "file", "파일 내용 출력", async (args) => {
   const { runFile } = await import("./commands/file.js");
-  await runFile();
+  await runFile(args);
 });
 
-addPassthroughCommand(program, "workflow", "결재 문서 작성/제출", async () => {
+addPassthroughCommand(program, "workflow", "결재 문서 작성/제출", async (args) => {
   const { runWorkflow } = await import("./commands/workflow.js");
-  await runWorkflow();
+  await runWorkflow(args);
 });
 
 addPassthroughCommand(program, "check-apis", "하드코딩된 API 엔드포인트 상태 확인", async () => {
@@ -170,9 +164,9 @@ addPassthroughCommand(program, "update", "최신 버전으로 업데이트", asy
   await runUpdate();
 });
 
-addPassthroughCommand(program, "__self-update-helper", "internal", async () => {
+addPassthroughCommand(program, "__self-update-helper", "internal", async (args) => {
   const { runSelfUpdateHelper } = await import("./commands/update.js");
-  await runSelfUpdateHelper();
+  await runSelfUpdateHelper(args);
 });
 
 await program.parseAsync(process.argv);

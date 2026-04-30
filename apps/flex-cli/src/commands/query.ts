@@ -11,12 +11,11 @@ export class QueryArgError extends Error {
   }
 }
 
-export function parseQueryArgs(argv: string[]): {
+export function parseQueryArgs(args: string[]): {
   sql: string | null;
   filePath: string | null;
   vars: Map<string, string>;
 } {
-  const args = argv.slice(3);
   let filePath: string | null = null;
   const vars = new Map<string, string>();
   const positional: string[] = [];
@@ -58,10 +57,10 @@ export function applyVars(sql: string, vars: Map<string, string>): string {
   return result;
 }
 
-export async function runQuery(): Promise<void> {
+export async function runQuery(argv: string[] = process.argv.slice(3)): Promise<void> {
   let parsed: ReturnType<typeof parseQueryArgs>;
   try {
-    parsed = parseQueryArgs(process.argv);
+    parsed = parseQueryArgs(argv);
   } catch (error) {
     if (error instanceof QueryArgError) {
       console.error(`[FLEX-AX:ERROR] ${error.message}`);

@@ -31,9 +31,8 @@ import { resolveTargetCorporation } from "./live-common.js";
  * `flex-ax workflow {templates|describe|submit}` 디스패처.
  * cli.ts 에서 case 하나로 받아 여기로 위임한다.
  */
-export async function runWorkflow(): Promise<void> {
-  // process.argv = [node, cli.js, "workflow", <sub>, ...rest]
-  const [sub, ...rest] = process.argv.slice(3);
+export async function runWorkflow(argv: string[] = process.argv.slice(3)): Promise<void> {
+  const [sub, ...rest] = argv;
 
   switch (sub) {
     case "templates":
@@ -51,7 +50,6 @@ export async function runWorkflow(): Promise<void> {
     case "-h":
       printUsage();
       process.exit(sub === undefined ? 1 : 0);
-      return;
     default:
       console.error(`[FLEX-AX:WORKFLOW:ERROR] 알 수 없는 서브커맨드: ${sub}`);
       printUsage();

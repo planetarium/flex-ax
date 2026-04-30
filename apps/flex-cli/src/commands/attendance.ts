@@ -40,8 +40,8 @@ interface TimeOffUsesResponse {
   nextCursor?: string;
 }
 
-export async function runAttendance(): Promise<void> {
-  const [sub, ...rest] = process.argv.slice(3);
+export async function runAttendance(argv: string[] = process.argv.slice(3)): Promise<void> {
+  const [sub, ...rest] = argv;
 
   switch (sub) {
     case "list":
@@ -56,7 +56,6 @@ export async function runAttendance(): Promise<void> {
     case "-h":
       printUsage();
       process.exit(sub === undefined ? 1 : 0);
-      return;
     default:
       console.error(`[FLEX-AX:ATTENDANCE:ERROR] 알 수 없는 서브커맨드: ${sub}`);
       printUsage();

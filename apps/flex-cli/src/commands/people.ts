@@ -75,8 +75,8 @@ interface SearchUsersResponse {
   list: Person[];
 }
 
-export async function runPeople(): Promise<void> {
-  const [sub, ...rest] = process.argv.slice(3);
+export async function runPeople(argv: string[] = process.argv.slice(3)): Promise<void> {
+  const [sub, ...rest] = argv;
 
   switch (sub) {
     case "list":
@@ -94,7 +94,6 @@ export async function runPeople(): Promise<void> {
     case "-h":
       printUsage();
       process.exit(sub === undefined ? 1 : 0);
-      return;
     default:
       console.error(`[FLEX-AX:PEOPLE:ERROR] 알 수 없는 서브커맨드: ${sub}`);
       printUsage();
