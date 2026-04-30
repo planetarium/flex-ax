@@ -98,9 +98,9 @@ export async function runUpdate(): Promise<void> {
   }
 }
 
-export async function runSelfUpdateHelper(): Promise<void> {
+export async function runSelfUpdateHelper(argv: string[] = process.argv.slice(3)): Promise<void> {
   try {
-    const payload = parseHelperPayload(process.argv.slice(3));
+    const payload = parseHelperPayload(argv);
     await waitForProcessExit(payload.parentPid, 60_000);
     await replaceExecutable(payload);
 

@@ -15,11 +15,9 @@ import { promptLine, promptPassword, saveToKeyring } from "../auth/credentials.j
  *   - `--password-stdin` 플래그로 비밀번호를 stdin 파이프로 주입 가능
  *   - 비밀번호는 명시적 명령행 인자(`--password XXX`)로는 받지 않는다 — shell history/ps 노출 방지
  */
-export async function runLogin(): Promise<void> {
+export async function runLogin(argv: string[] = process.argv.slice(3)): Promise<void> {
   const logger = createLogger("LOGIN");
-  // cli.ts에서 process.argv = [node, cli.js, "login", ...rest]
-  const args = process.argv.slice(3);
-  const passwordFromStdin = args.includes("--password-stdin");
+  const passwordFromStdin = argv.includes("--password-stdin");
 
   let config;
   try {

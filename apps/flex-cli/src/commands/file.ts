@@ -4,9 +4,9 @@ import { loadConfig } from "../config/index.js";
 import { resolveFlexDataDir } from "../paths/index.js";
 import path from "node:path";
 
-export async function runFile(): Promise<void> {
-  const fileKey = process.argv[3];
-  const flag = process.argv[4];
+export async function runFile(argv: string[] = process.argv.slice(3)): Promise<void> {
+  const fileKey = argv[0];
+  const flag = argv[1];
 
   if (!fileKey) {
     console.error(`Usage: flex-ax file <fileKey> [--info]
