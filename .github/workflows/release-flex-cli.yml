@@ -73,6 +73,16 @@ jobs:
           ${{ matrix.smoke }} status
         working-directory: artifacts
 
+      - name: Smoke test import + query (regression for #41)
+        shell: bash
+        working-directory: artifacts
+        run: |
+          mkdir -p sample/instances sample/templates sample/attendance
+          echo '{"startedAt":"2024-01-01T00:00:00Z","durationMs":0}' > sample/crawl-report.json
+          OUTPUT_DIR=sample ${{ matrix.smoke }} import
+          test -f sample/flex-ax.db
+          OUTPUT_DIR=sample ${{ matrix.smoke }} query "SELECT count(*) AS n FROM templates"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.outfile }}
@@ -93,9 +103,14 @@ jobs:
           mkdir -p dist
           find release-assets -type f -exec cp {} dist/ \;
 
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#flex-cli@}" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
         with:
-          name: "flex-cli ${GITHUB_REF_NAME#flex-cli@}"
+          name: "flex-cli ${{ steps.version.outputs.version }}"
           files: dist/*
           generate_release_notes: true

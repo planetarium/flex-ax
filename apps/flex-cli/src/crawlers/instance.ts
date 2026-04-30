@@ -7,13 +7,13 @@ import type { WorkflowInstance } from "../types/instance.js";
 import type { ApprovalStep, AttachmentInfo, FieldValue } from "../types/common.js";
 import {
   type CrawlResult,
-  delay,
   emptyCrawlResult,
   nowISO,
   withRetry,
   flexFetch,
   flexPost,
   resolveUrl,
+  pooledMap,
 } from "./shared.js";
 
 export async function crawlInstances(
@@ -113,7 +113,7 @@ async function crawlSearchGroup(
     };
 
     const searchParams = new URLSearchParams({
-      size: "20",
+      size: String(config.searchPageSize),
       sortType: "LAST_UPDATED_AT",
       direction: "DESC",
     });
@@ -149,20 +149,14 @@ async function crawlSearchGroup(
       nextContinuationToken: page.continuationToken ?? null,
     });
 
-    let newInPage = 0;
-    for (const doc of docs) {
+    // 같은 페이지 내 docKey들을 동시 처리. collectedKeys 중복은 미리 거른다.
+    const newDocs = docs.filter((d) => !collectedKeys.has(d.document.documentKey));
+    const newInPage = newDocs.length;
+    result.totalCount += newInPage;
+
+    await pooledMap(newDocs, config.concurrency, async (doc) => {
       const docKey = doc.document.documentKey;
-
-      if (collectedKeys.has(docKey)) {
-        continue;
-      }
-
-      result.totalCount++;
-      newInPage++;
-
       try {
-        logger.progress("인스턴스 수집", result.successCount + result.failureCount + 1);
-
         const hasPathParam = /\{[^}]+\}/.test(detailBase);
         const detailUrl = hasPathParam
           ? detailBase.replace(/\{[^}]+\}/, docKey)
@@ -193,10 +187,13 @@ async function crawlSearchGroup(
         logger.error(`인스턴스 수집 실패: ${docKey}`, {
           error: error instanceof Error ? error.message : String(error),
         });
+      } finally {
+        logger.progress(
+          "인스턴스 수집",
+          result.successCount + result.failureCount,
+        );
       }
-
-      await delay(config.requestDelayMs);
-    }
+    });
 
     logger.info("인스턴스 페이지 처리 완료", {
       group: group.label,
@@ -381,31 +378,27 @@ async function processAttachments(
   storage: StorageWriter,
   logger: Logger,
 ): Promise<AttachmentInfo[]> {
-  const results: AttachmentInfo[] = [];
+  if (rawAttachments.length === 0) return [];
 
-  for (const att of rawAttachments) {
+  return pooledMap(rawAttachments, config.attachmentConcurrency, async (att) => {
     const info: AttachmentInfo = { fileName: att.file.fileName };
 
-    if (config.downloadAttachments) {
-      try {
-        const response = await fetch(att.file.downloadUrl, { headers: apiHeaders(authCtx) });
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${att.file.downloadUrl}`);
-        }
-        const buffer = Buffer.from(await response.arrayBuffer());
+    if (!config.downloadAttachments) return info;
 
-        const savedPath = await storage.saveAttachment(
-          instanceId, att.file.fileName, buffer, att.file.fileKey,
-        );
-        info.localPath = savedPath;
-      } catch (error) {
-        info.downloadError = error instanceof Error ? error.message : String(error);
-        logger.warn(`첨부파일 다운로드 실패: ${att.file.fileName}`, { instanceId });
+    try {
+      const response = await fetch(att.file.downloadUrl, { headers: apiHeaders(authCtx) });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${att.file.downloadUrl}`);
       }
+      const buffer = Buffer.from(await response.arrayBuffer());
+
+      info.localPath = await storage.saveAttachment(
+        instanceId, att.file.fileName, buffer, att.file.fileKey,
+      );
+    } catch (error) {
+      info.downloadError = error instanceof Error ? error.message : String(error);
+      logger.warn(`첨부파일 다운로드 실패: ${att.file.fileName}`, { instanceId });
     }
-
-    results.push(info);
-  }
-
-  return results;
+    return info;
+  });
 }

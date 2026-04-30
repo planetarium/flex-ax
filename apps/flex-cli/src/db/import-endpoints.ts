@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { Logger } from "../logger/index.js";
@@ -15,7 +15,7 @@ function readEndpoint(endpointsDir: string, filename: string): any | null {
 }
 
 export function importEndpoints(
-  db: Database.Database,
+  db: Database,
   endpointsDir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   logger: Logger,
@@ -54,7 +54,7 @@ type EnsureCustomer = (customerId: string | null | undefined) => void;
 // Company / Org
 // ============================================================
 function importCompanyOrg(
-  db: Database.Database, dir: string,
+  db: Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   ensureCustomer: EnsureCustomer,
   logger: Logger, inc: Inc,
@@ -84,9 +84,14 @@ function importCompanyOrg(
     // customers
     const f = readEndpoint(dir, "customer-info.json");
     if (f?.data) {
-      const d = f.data as Record<string, unknown>;
-      const legal = (d.legalInfo ?? {}) as Record<string, unknown>;
-      const addr = (legal.address ?? {}) as Record<string, unknown>;
+      // bun:sqlite Statement#run requires SQLQueryBindings, so we relax the
+      // payload type to `any` rather than threading casts through every field.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const d = f.data as Record<string, any>;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const legal = (d.legalInfo ?? {}) as Record<string, any>;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const addr = (legal.address ?? {}) as Record<string, any>;
       stmts.customer.run(
         d.customerIdHash, legal.name ?? d.customerIdHash,
         legal.establishDate ?? null, d.logoImageFileKey ?? null,
@@ -174,7 +179,7 @@ function importCompanyOrg(
 // Employee / HR
 // ============================================================
 function importEmployeeHR(
-  db: Database.Database, dir: string,
+  db: Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   ensureCustomer: EnsureCustomer,
   _logger: Logger, inc: Inc,
@@ -370,7 +375,7 @@ function importEmployeeHR(
 // Personnel / Profile
 // ============================================================
 function importPersonnelProfile(
-  db: Database.Database, dir: string,
+  db: Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   ensureCustomer: EnsureCustomer,
   logger: Logger, inc: Inc,
@@ -533,7 +538,7 @@ function importPersonnelProfile(
 // Work Rules / Time Off / Holidays
 // ============================================================
 function importWorkTimeOff(
-  db: Database.Database, dir: string,
+  db: Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   ensureCustomer: EnsureCustomer,
   logger: Logger, inc: Inc,
@@ -809,7 +814,7 @@ function importWorkTimeOff(
 // Other (Calendar, Todo, Feedback, Attachments, etc.)
 // ============================================================
 function importOther(
-  db: Database.Database, dir: string,
+  db: Database, dir: string,
   upsertUser: (id: string | undefined, name: string | undefined | null) => void,
   ensureCustomer: EnsureCustomer,
   _logger: Logger, inc: Inc,
