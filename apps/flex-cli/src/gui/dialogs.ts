@@ -145,19 +145,21 @@ async function runPowerShellText(options: {
   label: string;
   defaultValue: string;
 }): Promise<string> {
-  const script = `
+  const payload = encodePowerShellPayload(options);
+  const script = `& {
+$payload = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("${payload}")) | ConvertFrom-Json
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $form = New-Object System.Windows.Forms.Form
-$form.Text = $args[0]
+$form.Text = $payload.title
 $form.StartPosition = "CenterScreen"
 $form.ClientSize = New-Object System.Drawing.Size(420, 130)
 $label = New-Object System.Windows.Forms.Label
-$label.Text = $args[1]
+$label.Text = $payload.label
 $label.AutoSize = $true
 $label.Location = New-Object System.Drawing.Point(12, 16)
 $box = New-Object System.Windows.Forms.TextBox
-$box.Text = $args[2]
+$box.Text = $payload.defaultValue
 $box.Width = 390
 $box.Location = New-Object System.Drawing.Point(12, 44)
 $ok = New-Object System.Windows.Forms.Button
@@ -171,7 +173,8 @@ $cancel.Location = New-Object System.Drawing.Point(327, 86)
 $form.Controls.AddRange(@($label, $box, $ok, $cancel))
 $form.AcceptButton = $ok
 $form.CancelButton = $cancel
-if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($box.Text) } else { exit 1 }`;
+if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($box.Text) } else { exit 1 }
+}`;
   return runCommand("powershell.exe", [
     "-NoProfile",
     "-NonInteractive",
@@ -179,14 +182,13 @@ if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]:
     "Bypass",
     "-Command",
     script,
-    options.title,
-    options.label,
-    options.defaultValue,
   ]);
 }
 
 async function runPowerShellPassword(email: string): Promise<string> {
-  const script = `
+  const payload = encodePowerShellPayload({ email });
+  const script = `& {
+$payload = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("${payload}")) | ConvertFrom-Json
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $form = New-Object System.Windows.Forms.Form
@@ -194,7 +196,7 @@ $form.Text = "flex-ax login"
 $form.StartPosition = "CenterScreen"
 $form.ClientSize = New-Object System.Drawing.Size(420, 130)
 $label = New-Object System.Windows.Forms.Label
-$label.Text = "Password for " + $args[0]
+$label.Text = "Password for " + $payload.email
 $label.AutoSize = $true
 $label.Location = New-Object System.Drawing.Point(12, 16)
 $box = New-Object System.Windows.Forms.TextBox
@@ -212,7 +214,8 @@ $cancel.Location = New-Object System.Drawing.Point(327, 86)
 $form.Controls.AddRange(@($label, $box, $ok, $cancel))
 $form.AcceptButton = $ok
 $form.CancelButton = $cancel
-if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($box.Text) } else { exit 1 }`;
+if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($box.Text) } else { exit 1 }
+}`;
   return runCommand("powershell.exe", [
     "-NoProfile",
     "-NonInteractive",
@@ -220,15 +223,17 @@ if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]:
     "Bypass",
     "-Command",
     script,
-    email,
   ]);
 }
 
 async function runPowerShellConfirm(title: string, message: string, okLabel: string): Promise<boolean> {
-  const script = `
+  const payload = encodePowerShellPayload({ title, message, okLabel });
+  const script = `& {
+$payload = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("${payload}")) | ConvertFrom-Json
 Add-Type -AssemblyName System.Windows.Forms
-$result = [System.Windows.Forms.MessageBox]::Show($args[1], $args[0], [System.Windows.Forms.MessageBoxButtons]::OKCancel, [System.Windows.Forms.MessageBoxIcon]::Question)
-if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($args[2]) } else { exit 1 }`;
+$result = [System.Windows.Forms.MessageBox]::Show($payload.message, $payload.title, [System.Windows.Forms.MessageBoxButtons]::OKCancel, [System.Windows.Forms.MessageBoxIcon]::Question)
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($payload.okLabel) } else { exit 1 }
+}`;
   const output = await runCommand("powershell.exe", [
     "-NoProfile",
     "-NonInteractive",
@@ -236,11 +241,12 @@ if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write(
     "Bypass",
     "-Command",
     script,
-    title,
-    message,
-    okLabel,
   ]);
   return output === okLabel;
+}
+
+function encodePowerShellPayload(value: unknown): string {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64");
 }
 
 async function runLinuxText(options: {
