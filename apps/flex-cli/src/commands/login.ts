@@ -2,7 +2,8 @@ import { loadConfig } from "../config/index.js";
 import { saveGlobalConfig, getGlobalConfigPath } from "../config/global-config.js";
 import { createLogger } from "../logger/index.js";
 import { performLogin } from "../auth/index.js";
-import { promptLine, promptPassword, saveToKeyring } from "../auth/credentials.js";
+import { promptLine, promptPassword, readFromKeyring, saveToKeyring } from "../auth/credentials.js";
+import { confirmGuiOverwrite, GuiUnavailableError, promptGuiCredentials } from "../gui/dialogs.js";
 
 /**
  * 이메일 + 비밀번호를 받아 실제 5단계 로그인까지 통과하면
@@ -18,6 +19,7 @@ import { promptLine, promptPassword, saveToKeyring } from "../auth/credentials.j
 export async function runLogin(argv: string[] = process.argv.slice(3)): Promise<void> {
   const logger = createLogger("LOGIN");
   const passwordFromStdin = argv.includes("--password-stdin");
+  const useGui = argv.includes("--gui");
 
   let config;
   try {
@@ -30,6 +32,15 @@ export async function runLogin(argv: string[] = process.argv.slice(3)): Promise<
   }
 
   const isTTY = process.stdin.isTTY === true;
+
+  if (useGui) {
+    if (passwordFromStdin) {
+      logger.error("--gui와 --password-stdin은 함께 사용할 수 없습니다.");
+      process.exit(1);
+    }
+    await runGuiLogin(config.flexEmail, config.flexBaseUrl, logger);
+    return;
+  }
 
   if (passwordFromStdin && isTTY) {
     logger.error("--password-stdin은 stdin이 파이프로 주입될 때 사용하세요. 대화형 셸이라면 옵션을 빼거나 echo/here-doc으로 파이프하세요.");
@@ -93,6 +104,51 @@ export async function runLogin(argv: string[] = process.argv.slice(3)): Promise<
   }
   saveToKeyring(email, password, logger);
   console.log(`[FLEX-AX:LOGIN] 완료 — 이후 crawl/check-apis 실행 시 자동으로 사용됩니다.`);
+}
+
+async function runGuiLogin(defaultEmail: string, baseUrl: string, logger: ReturnType<typeof createLogger>): Promise<void> {
+  let credentials;
+  try {
+    credentials = await promptGuiCredentials(defaultEmail);
+  } catch (error) {
+    if (error instanceof GuiUnavailableError) {
+      logger.error(error.message);
+      process.exit(1);
+    }
+    throw error;
+  }
+
+  const existing = readFromKeyring(credentials.email);
+  if (existing !== null) {
+    let shouldOverwrite = false;
+    try {
+      shouldOverwrite = await confirmGuiOverwrite(credentials.email);
+    } catch (error) {
+      if (error instanceof GuiUnavailableError) {
+        logger.error(error.message);
+        process.exit(1);
+      }
+      throw error;
+    }
+    if (!shouldOverwrite) {
+      console.log("[FLEX-AX:LOGIN] 취소됨 — 기존 키링 항목을 유지했습니다.");
+      return;
+    }
+  }
+
+  try {
+    await performLogin(baseUrl, credentials.email, credentials.password, logger);
+  } catch (error) {
+    logger.error("로그인 검증 실패 — 키링/글로벌 config에 저장하지 않았습니다", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    process.exit(1);
+  }
+
+  saveGlobalConfig({ email: credentials.email });
+  console.log(`[FLEX-AX:LOGIN] 이메일 저장: ${getGlobalConfigPath()}`);
+  saveToKeyring(credentials.email, credentials.password, logger);
+  console.log("[FLEX-AX:LOGIN] 완료 — 이후 crawl/check-apis 실행 시 자동으로 사용됩니다.");
 }
 
 async function readAllStdin(): Promise<string> {

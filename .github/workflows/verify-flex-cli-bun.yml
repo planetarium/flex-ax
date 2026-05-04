@@ -76,3 +76,8 @@ jobs:
           OUTPUT_DIR=sample ${{ matrix.smoke }} import
           test -f sample/flex-ax.db
           OUTPUT_DIR=sample ${{ matrix.smoke }} query "SELECT count(*) AS n FROM templates"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.outfile }}
+          path: artifacts/${{ matrix.outfile }}

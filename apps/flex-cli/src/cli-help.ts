@@ -3,7 +3,9 @@ const TOP_LEVEL_COMMANDS = `Commands:
                   비밀번호는 OS 키링; 검증 후 저장)
                   비대화식: FLEX_EMAIL/FLEX_PASSWORD env 또는
                   --password-stdin 으로 stdin 파이프 입력 가능
+                  --gui 로 플랫폼 기본 대화상자 사용 가능
   logout          OS 키링에서 비밀번호 삭제 (글로벌 config의 이메일은 보존)
+                  --gui 로 삭제 확인 대화상자 사용 가능
   status          현재 등록 상태 표시 (비밀번호 값은 마스킹)
   crawl           카탈로그 기반 크롤링 → output/ 저장
   import          크롤링 결과(JSON) → SQLite DB 변환
@@ -33,6 +35,7 @@ Options:
   --version, -v       버전 출력
   --help, -h          도움말 출력
   --password-stdin    (login 전용) 비밀번호를 stdin 파이프로 주입
+  --gui               (login/logout 전용) 플랫폼 기본 대화상자 사용
 
 Env:
   FLEX_EMAIL                  선택 — 지정 시 글로벌 config보다 우선
@@ -44,13 +47,15 @@ Env:
   FLEX_AX_AUTO_UPDATE=false   기동 시 자동 업데이트 비활성화`;
 
 const COMMAND_HELP: Record<string, string> = {
-  login: `Usage: flex-ax login [--password-stdin]
+  login: `Usage: flex-ax login [--gui] [--password-stdin]
 
 이메일/비밀번호를 등록합니다.
+--gui 를 사용하면 브라우저 대신 플랫폼 기본 대화상자로 입력합니다.
 --password-stdin 을 사용하면 stdin 파이프로 비밀번호를 주입할 수 있습니다.`,
-  logout: `Usage: flex-ax logout
+  logout: `Usage: flex-ax logout [--gui]
 
-OS 키링에서 저장된 비밀번호를 삭제합니다.`,
+OS 키링에서 저장된 비밀번호를 삭제합니다.
+--gui 를 사용하면 삭제 확인 대화상자를 표시합니다.`,
   status: `Usage: flex-ax status
 
 현재 등록된 로그인 상태를 표시합니다.`,

@@ -77,9 +77,9 @@ addPassthroughCommand(program, "login", "이메일/비밀번호 등록", async (
   await runLogin(args);
 });
 
-addPassthroughCommand(program, "logout", "OS 키링에서 비밀번호 삭제", async () => {
+addPassthroughCommand(program, "logout", "OS 키링에서 비밀번호 삭제", async (args) => {
   const { runLogout } = await import("./commands/logout.js");
-  await runLogout();
+  await runLogout(args);
 });
 
 addPassthroughCommand(program, "status", "현재 등록 상태 표시", async () => {
