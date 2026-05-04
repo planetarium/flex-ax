@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { parseQueryArgs, applyVars, QueryArgError } from "./query.js";
 
 describe("parseQueryArgs", () => {
-  // argv[0] = node, argv[1] = script, argv[2] = "query", argv[3..] = args
-  const base = ["node", "flex-ax", "query"];
+  // parseQueryArgs() receives the command args passed to runQuery(args).
+  const base: string[] = [];
 
   it("parses inline SQL", () => {
     const result = parseQueryArgs([...base, "SELECT * FROM users"]);
