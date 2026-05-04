@@ -1,9 +1,11 @@
 import { loadConfig } from "../config/index.js";
 import { createLogger } from "../logger/index.js";
 import { deleteFromKeyring } from "../auth/credentials.js";
+import { confirmGuiLogout, GuiUnavailableError } from "../gui/dialogs.js";
 
-export async function runLogout(): Promise<void> {
+export async function runLogout(argv: string[] = process.argv.slice(3)): Promise<void> {
   const logger = createLogger("LOGOUT");
+  const useGui = argv.includes("--gui");
 
   let config;
   try {
@@ -18,6 +20,23 @@ export async function runLogout(): Promise<void> {
   if (!config.flexEmail) {
     console.log("[FLEX-AX:LOGOUT] 등록된 이메일이 없습니다 — 삭제할 항목이 없습니다.");
     return;
+  }
+
+  if (useGui) {
+    let confirmed = false;
+    try {
+      confirmed = await confirmGuiLogout(config.flexEmail);
+    } catch (error) {
+      if (error instanceof GuiUnavailableError) {
+        logger.error(error.message);
+        process.exit(1);
+      }
+      throw error;
+    }
+    if (!confirmed) {
+      console.log("[FLEX-AX:LOGOUT] 취소됨 — 키링 항목을 유지했습니다.");
+      return;
+    }
   }
 
   const removed = deleteFromKeyring(config.flexEmail);
