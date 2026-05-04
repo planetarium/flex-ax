@@ -314,7 +314,7 @@ async function runLinuxConfirm(
 async function runCommand(command: string, args: string[]): Promise<string> {
   try {
     const { stdout } = await execFileAsync(command, args, {
-      windowsHide: true,
+      windowsHide: false,
       timeout: 0,
       maxBuffer: 1024 * 64,
     });
