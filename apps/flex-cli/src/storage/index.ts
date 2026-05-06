@@ -89,7 +89,10 @@ export function normalizeWatermarkFile(parsed: unknown): WatermarkFile {
         const lastUpdatedAt = rawGroup.lastUpdatedAt;
         // lastUpdatedAt만이 워터마크의 본질. 나머지는 누락/이상값이면 omit해서
         // 호출자가 default로 폴백하게 한다 (=그룹 자체를 잃지 않는다).
-        if (typeof lastUpdatedAt !== "string") continue;
+        // 빈 문자열/공백은 영구적으로 unusable하므로 그룹째 드롭한다.
+        if (typeof lastUpdatedAt !== "string" || lastUpdatedAt.trim().length === 0) {
+          continue;
+        }
         const group: WatermarkGroupState = { lastUpdatedAt };
         const overlapDays = rawGroup.overlapDays;
         if (
@@ -165,14 +168,25 @@ export function createStorageWriter(outputDir: string, catalogPath: string): Sto
 
     async loadWatermarks() {
       const watermarkPath = path.join(outputDir, "watermark.json");
+      let content: string;
       try {
-        const content = await readFile(watermarkPath, "utf-8");
-        const parsed = JSON.parse(content) as unknown;
-        return normalizeWatermarkFile(parsed);
+        content = await readFile(watermarkPath, "utf-8");
+      } catch (err) {
+        // 파일 없음(ENOENT) — 정상적인 부트스트랩 시나리오. silent fallback.
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+        // 권한/디스크/디렉토리 충돌 등 기타 I/O 에러는 surface해서 호출자가
+        // 인지하게 한다. 침묵 부트스트랩은 이전에 잘 채워둔 워터마크를
+        // 모르고 덮어쓰는 위험이 있다.
+        throw err;
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(content);
       } catch {
-        // 파일 없거나 깨진 경우 — 부트스트랩으로 처리
+        // 손상된 JSON은 부트스트랩으로 폴백. 다음 정상 실행에서 새로 채워진다.
         return {};
       }
+      return normalizeWatermarkFile(parsed);
     },
 
     async saveWatermarks(file) {

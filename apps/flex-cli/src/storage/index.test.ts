@@ -1,6 +1,17 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeWatermarkFile, type WatermarkFile } from "./index.js";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
+import {
+  createStorageWriter,
+  normalizeWatermarkFile,
+  type WatermarkFile,
+} from "./index.js";
+
+async function tmpStorageDir(): Promise<string> {
+  return await mkdtemp(path.join(tmpdir(), "flex-ax-storage-"));
+}
 
 describe("normalizeWatermarkFile", () => {
   it("returns {} for non-object roots (array, null, primitive)", () => {
@@ -83,6 +94,22 @@ describe("normalizeWatermarkFile", () => {
     assert.equal(groups.ok.overlapDays, 2);
   });
 
+  it("drops a group whose lastUpdatedAt is empty or whitespace-only", () => {
+    const result = normalizeWatermarkFile({
+      approvalDocuments: {
+        groups: {
+          empty: { lastUpdatedAt: "" },
+          ws: { lastUpdatedAt: "   \t  " },
+          ok: { lastUpdatedAt: "2026-04-29T12:00:00Z" },
+        },
+      },
+    });
+    const groups = result.approvalDocuments!.groups;
+    assert.equal(groups.empty, undefined);
+    assert.equal(groups.ws, undefined);
+    assert.ok(groups.ok);
+  });
+
   it("preserves a well-formed file unchanged in shape", () => {
     const raw: WatermarkFile = {
       approvalDocuments: {
@@ -98,5 +125,33 @@ describe("normalizeWatermarkFile", () => {
     };
     const result = normalizeWatermarkFile(raw);
     assert.deepEqual(result, raw);
+  });
+});
+
+describe("createStorageWriter loadWatermarks", () => {
+  it("returns {} when watermark.json is missing (ENOENT)", async () => {
+    const dir = await tmpStorageDir();
+    const writer = createStorageWriter(dir, path.join(dir, "catalog.json"));
+    assert.deepEqual(await writer.loadWatermarks(), {});
+  });
+
+  it("returns {} when watermark.json contains unparseable JSON", async () => {
+    const dir = await tmpStorageDir();
+    await writeFile(path.join(dir, "watermark.json"), "{ this is not json", "utf-8");
+    const writer = createStorageWriter(dir, path.join(dir, "catalog.json"));
+    assert.deepEqual(await writer.loadWatermarks(), {});
+  });
+
+  it("surfaces unexpected I/O errors instead of falling back to bootstrap", async () => {
+    // Triggering a non-ENOENT read error reliably across platforms: make
+    // watermark.json a directory. readFile then fails with EISDIR.
+    const dir = await tmpStorageDir();
+    await mkdir(path.join(dir, "watermark.json"));
+    const writer = createStorageWriter(dir, path.join(dir, "catalog.json"));
+    await assert.rejects(
+      () => writer.loadWatermarks(),
+      (err: NodeJS.ErrnoException) =>
+        err.code === "EISDIR" || err.code === "EACCES" || err.code === "EPERM",
+    );
   });
 });
