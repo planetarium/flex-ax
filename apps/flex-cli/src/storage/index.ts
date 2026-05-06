@@ -58,6 +58,47 @@ async function ensureDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true });
 }
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * 손상되거나 사람이 손댄 watermark.json을 안전한 shape으로 정규화한다.
+ * 의도적으로 관대하다(스키마 위반은 조용히 누락) — 워터마크는 손실되어도
+ * 부트스트랩 풀크롤로 자가복구되므로 크롤 전체를 중단시키는 것보다 낫다.
+ */
+export function normalizeWatermarkFile(parsed: unknown): WatermarkFile {
+  if (!isPlainObject(parsed)) return {};
+  const out: WatermarkFile = {};
+  for (const [domain, rawState] of Object.entries(parsed)) {
+    if (!isPlainObject(rawState)) continue;
+    const groupsCandidate = (rawState as Record<string, unknown>).groups;
+    const groups: Record<string, WatermarkGroupState> = {};
+    if (isPlainObject(groupsCandidate)) {
+      for (const [label, rawGroup] of Object.entries(groupsCandidate)) {
+        if (!isPlainObject(rawGroup)) continue;
+        const lastUpdatedAt = rawGroup.lastUpdatedAt;
+        const overlapDays = rawGroup.overlapDays;
+        const lastSuccessfulRunAt = rawGroup.lastSuccessfulRunAt;
+        if (
+          typeof lastUpdatedAt !== "string" ||
+          typeof overlapDays !== "number" ||
+          typeof lastSuccessfulRunAt !== "string"
+        ) {
+          continue;
+        }
+        groups[label] = { lastUpdatedAt, overlapDays, lastSuccessfulRunAt };
+      }
+    }
+    const lastFullReconAt = (rawState as Record<string, unknown>).lastFullReconAt;
+    out[domain] = {
+      groups,
+      lastFullReconAt: typeof lastFullReconAt === "string" ? lastFullReconAt : undefined,
+    };
+  }
+  return out;
+}
+
 async function writeJson(filePath: string, data: unknown): Promise<void> {
   await ensureDir(path.dirname(filePath));
   await writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
@@ -110,10 +151,7 @@ export function createStorageWriter(outputDir: string, catalogPath: string): Sto
       try {
         const content = await readFile(watermarkPath, "utf-8");
         const parsed = JSON.parse(content) as unknown;
-        if (parsed && typeof parsed === "object") {
-          return parsed as WatermarkFile;
-        }
-        return {};
+        return normalizeWatermarkFile(parsed);
       } catch {
         // 파일 없거나 깨진 경우 — 부트스트랩으로 처리
         return {};

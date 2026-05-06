@@ -358,6 +358,100 @@ describe("crawlInstances incremental wiring", () => {
     );
   });
 
+  it("treats an invalid watermark.lastUpdatedAt as bootstrap for that group", async () => {
+    // Simulates a corrupted/hand-edited watermark file that survived
+    // normalization (e.g., string field present but unparseable). The
+    // group must omit lastUpdatedDateRange so the run self-heals into a
+    // full crawl rather than aborting on RangeError.
+    const initial = {
+      approvalDocuments: {
+        groups: {
+          "in-progress": {
+            lastUpdatedAt: "garbage",
+            overlapDays: 1,
+            lastSuccessfulRunAt: "2026-04-30T00:00:00Z",
+          },
+          done: {
+            lastUpdatedAt: "2026-04-25T00:00:00Z",
+            overlapDays: 2,
+            lastSuccessfulRunAt: "2026-04-30T00:00:00Z",
+          },
+        },
+      },
+    } as unknown as WatermarkFile;
+
+    const search = new Map<string, SearchResp>([
+      [
+        "IN_PROGRESS",
+        { documents: [{ document: { documentKey: "ip-ok" } }], total: 1, hasNext: false },
+      ],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    const details = new Map<string, DetailResp>([
+      ["ip-ok", detailFor("ip-ok", "2026-05-05T01:00:00Z", "IN_PROGRESS")],
+    ]);
+    const { calls } = setupFetch(search, details);
+
+    const storage = makeStorage(initial);
+    const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    assert.equal(result.failureCount, 0);
+    const inProgressCall = calls.find(
+      (c) =>
+        c.url.includes("/user-boxes/search") &&
+        (c.body as { filter: { statuses: string[] } }).filter.statuses[0] === "IN_PROGRESS",
+    );
+    assert.ok(inProgressCall);
+    const filter = (inProgressCall.body as { filter: Record<string, unknown> }).filter;
+    assert.ok(
+      !("lastUpdatedDateRange" in filter),
+      "invalid watermark must self-heal by omitting the date range",
+    );
+    // After a clean run, the corrupted watermark is replaced with the
+    // observed max — the file repairs itself.
+    assert.equal(
+      storage._watermarks.approvalDocuments!.groups["in-progress"].lastUpdatedAt,
+      "2026-05-05T01:00:00Z",
+    );
+  });
+
+  it("uses epoch-ms comparison so trailing-Z and millisecond forms order correctly", async () => {
+    // Stored watermark "...44Z" is *earlier* in time than a candidate
+    // "...44.500Z", but a naive lexicographic comparison would place the
+    // candidate first and refuse to advance. epoch-ms comparison fixes it.
+    const initial: WatermarkFile = {
+      approvalDocuments: {
+        groups: {
+          "in-progress": {
+            lastUpdatedAt: "2026-04-29T12:17:44Z",
+            overlapDays: 1,
+            lastSuccessfulRunAt: "2026-04-29T12:17:44Z",
+          },
+        },
+      },
+    };
+    const search = new Map<string, SearchResp>([
+      [
+        "IN_PROGRESS",
+        { documents: [{ document: { documentKey: "ms-doc" } }], total: 1, hasNext: false },
+      ],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    const details = new Map<string, DetailResp>([
+      ["ms-doc", detailFor("ms-doc", "2026-04-29T12:17:44.500Z", "IN_PROGRESS")],
+    ]);
+    setupFetch(search, details);
+
+    const storage = makeStorage(initial);
+    await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    assert.equal(
+      storage._watermarks.approvalDocuments!.groups["in-progress"].lastUpdatedAt,
+      "2026-04-29T12:17:44.500Z",
+      "candidate is later in time and must replace the watermark",
+    );
+  });
+
   it("never regresses a watermark when observed max is older than stored", async () => {
     const initial: WatermarkFile = {
       approvalDocuments: {

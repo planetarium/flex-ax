@@ -1,6 +1,32 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { toKstDate } from "./shared.js";
+import { isLaterIso, toKstDate } from "./shared.js";
+
+describe("isLaterIso", () => {
+  it("compares by epoch ms, not lexicographically", () => {
+    // ms-bearing string is lexicographically smaller than the trailing-Z
+    // form even though it's later in time. Compare:
+    //   "2026-04-29T12:17:44.500Z"  <  "2026-04-29T12:17:44Z"  (lex)
+    //   500ms later                  >  baseline               (time)
+    assert.equal(isLaterIso("2026-04-29T12:17:44.500Z", "2026-04-29T12:17:44Z"), true);
+    assert.equal(isLaterIso("2026-04-29T12:17:44Z", "2026-04-29T12:17:44.500Z"), false);
+  });
+
+  it("treats null/undefined baseline as -infinity", () => {
+    assert.equal(isLaterIso("2026-01-01T00:00:00Z", null), true);
+    assert.equal(isLaterIso("2026-01-01T00:00:00Z", undefined), true);
+  });
+
+  it("never promotes an invalid candidate over any baseline", () => {
+    assert.equal(isLaterIso("not-a-date", null), false);
+    assert.equal(isLaterIso("", "2026-01-01T00:00:00Z"), false);
+    assert.equal(isLaterIso(null, null), false);
+  });
+
+  it("treats invalid baseline as -infinity (any valid candidate wins)", () => {
+    assert.equal(isLaterIso("2026-01-01T00:00:00Z", "garbage"), true);
+  });
+});
 
 describe("toKstDate", () => {
   it("returns YYYY-MM-DD in Asia/Seoul", () => {

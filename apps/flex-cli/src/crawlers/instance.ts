@@ -13,6 +13,7 @@ import {
   type CrawlResult,
   emptyCrawlResult,
   nowISO,
+  isLaterIso,
   toKstDate,
   withRetry,
   flexFetch,
@@ -105,7 +106,7 @@ export async function crawlInstances(
       //   - 0건 처리됐어도 후퇴/삭제 금지
       if (groupFailure === 0 && observedMaxUpdatedAt) {
         const prev = existing?.lastUpdatedAt ?? null;
-        if (!prev || observedMaxUpdatedAt > prev) {
+        if (isLaterIso(observedMaxUpdatedAt, prev)) {
           domainState.groups[group.label] = {
             lastUpdatedAt: observedMaxUpdatedAt,
             overlapDays: existing?.overlapDays ?? group.defaultOverlapDays,
@@ -170,8 +171,12 @@ function computeDateRange(
   todayKst: string,
 ): DateRange | undefined {
   if (!watermark?.lastUpdatedAt) return undefined;
+  const watermarkMs = Date.parse(watermark.lastUpdatedAt);
+  // 워터마크 파일 손상/수동 편집으로 invalid timestamp가 들어오면 그 그룹은
+  // 이번 실행을 풀크롤처럼 처리(undefined 반환)해서 자가복구되도록 한다.
+  if (!Number.isFinite(watermarkMs)) return undefined;
   const overlapDays = watermark.overlapDays ?? defaultOverlapDays;
-  const fromMs = new Date(watermark.lastUpdatedAt).getTime() - overlapDays * MS_PER_DAY;
+  const fromMs = watermarkMs - overlapDays * MS_PER_DAY;
   return { from: toKstDate(new Date(fromMs)), to: todayKst };
 }
 
@@ -276,7 +281,7 @@ async function crawlSearchGroup(
         const instance = mapInstance(detail, attachments);
         await storage.saveInstance(instance);
         const observed = detail.document.updatedAt ?? null;
-        if (observed && (!groupMaxUpdatedAt || observed > groupMaxUpdatedAt)) {
+        if (isLaterIso(observed, groupMaxUpdatedAt)) {
           groupMaxUpdatedAt = observed;
         }
         collectedKeys.add(docKey);
