@@ -72,6 +72,15 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 /**
+ * `JSON.parse`는 `__proto__`/`constructor`/`prototype` 같은 특수 키를 own
+ * property로 만들 수 있다. 검증 없이 일반 `{}`에 대입하면 프로토타입이
+ * 오염되거나 객체 동작이 비정상화될 수 있으므로 이 키들은 거른다.
+ */
+function isSafeKey(key: string): boolean {
+  return key !== "__proto__" && key !== "constructor" && key !== "prototype";
+}
+
+/**
  * 손상되거나 사람이 손댄 watermark.json을 안전한 shape으로 정규화한다.
  * 의도적으로 관대하다(스키마 위반은 조용히 누락) — 워터마크는 손실되어도
  * 부트스트랩 풀크롤로 자가복구되므로 크롤 전체를 중단시키는 것보다 낫다.
@@ -80,11 +89,13 @@ export function normalizeWatermarkFile(parsed: unknown): WatermarkFile {
   if (!isPlainObject(parsed)) return {};
   const out: WatermarkFile = {};
   for (const [domain, rawState] of Object.entries(parsed)) {
+    if (!isSafeKey(domain)) continue;
     if (!isPlainObject(rawState)) continue;
     const groupsCandidate = (rawState as Record<string, unknown>).groups;
     const groups: Record<string, WatermarkGroupState> = {};
     if (isPlainObject(groupsCandidate)) {
       for (const [label, rawGroup] of Object.entries(groupsCandidate)) {
+        if (!isSafeKey(label)) continue;
         if (!isPlainObject(rawGroup)) continue;
         const lastUpdatedAt = rawGroup.lastUpdatedAt;
         // lastUpdatedAt만이 워터마크의 본질. 나머지는 누락/이상값이면 omit해서

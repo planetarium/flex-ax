@@ -110,6 +110,25 @@ describe("normalizeWatermarkFile", () => {
     assert.ok(groups.ok);
   });
 
+  it("ignores __proto__ / constructor / prototype keys without polluting Object.prototype", () => {
+    // JSON.parse turns "__proto__" into an own property, so an
+    // attacker-controlled watermark.json could otherwise mutate the
+    // base object prototype as soon as we index into it.
+    const malicious = JSON.parse(
+      '{"__proto__":{"polluted":true},"approvalDocuments":{"groups":{"__proto__":{"lastUpdatedAt":"2026-04-29T12:00:00Z","polluted":true},"constructor":{"lastUpdatedAt":"2026-04-29T12:00:00Z"},"prototype":{"lastUpdatedAt":"2026-04-29T12:00:00Z"},"ok":{"lastUpdatedAt":"2026-04-29T12:00:00Z"}}}}',
+    );
+    const result = normalizeWatermarkFile(malicious);
+
+    // Object.prototype must still be clean.
+    assert.equal(({} as Record<string, unknown>).polluted, undefined);
+
+    // Dangerous keys are dropped at both the domain and the group level;
+    // safe siblings survive.
+    const groups = result.approvalDocuments!.groups;
+    assert.equal(Object.keys(groups).length, 1);
+    assert.ok(groups.ok);
+  });
+
   it("preserves a well-formed file unchanged in shape", () => {
     const raw: WatermarkFile = {
       approvalDocuments: {
