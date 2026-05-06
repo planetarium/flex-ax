@@ -13,13 +13,13 @@ import {
 import { createStorageWriter, type CrawlReport, type StorageWriter } from "../storage/index.js";
 import type { ApiCatalog } from "../types/catalog.js";
 import { crawlTemplates } from "../crawlers/template.js";
-import { crawlInstances } from "../crawlers/instance.js";
+import { crawlInstances, type CrawlMode } from "../crawlers/instance.js";
 import { crawlAttendanceApprovals } from "../crawlers/attendance.js";
 import { crawlCatalogEndpoints } from "../crawlers/catalog-endpoints.js";
 import type { CrawlError } from "../types/common.js";
 import type { CrawlResult } from "../crawlers/shared.js";
 
-export async function runCrawl(): Promise<void> {
+export async function runCrawl(args: string[] = process.argv.slice(3)): Promise<void> {
   const logger = createLogger("CRAWL");
 
   let config: Config;
@@ -30,6 +30,12 @@ export async function runCrawl(): Promise<void> {
       error: error instanceof Error ? error.message : String(error),
     });
     process.exit(1);
+  }
+
+  // CLI flag가 env/config 보다 우선. `--full`이 있으면 강제로 풀크롤.
+  const mode: CrawlMode = args.includes("--full") ? "full" : config.flexCrawlMode;
+  if (mode !== config.flexCrawlMode) {
+    logger.info("크롤 모드 override", { from: config.flexCrawlMode, to: mode });
   }
 
   // 카탈로그 로드 (없으면 하드코딩 폴백)
@@ -122,7 +128,7 @@ export async function runCrawl(): Promise<void> {
         continue;
       }
 
-      const errors = await runCrawlForCustomer(authCtx, config, catalog, corp, logger);
+      const errors = await runCrawlForCustomer(authCtx, config, catalog, corp, logger, mode);
       allErrors.push(...errors);
     }
   } finally {
@@ -143,6 +149,7 @@ async function runCrawlForCustomer(
   catalog: ApiCatalog | null,
   corp: Corporation,
   logger: Logger,
+  mode: CrawlMode,
 ): Promise<CrawlError[]> {
   const customerOutputDir = path.join(config.outputDir, corp.customerIdHash);
   const storage: StorageWriter = createStorageWriter(customerOutputDir, config.catalogPath);
@@ -157,7 +164,7 @@ async function runCrawlForCustomer(
 
   try {
     templateResult = await crawlTemplates(authCtx, config, catalog, storage, logger);
-    const instanceCrawlResult = await crawlInstances(authCtx, config, catalog, storage, logger);
+    const instanceCrawlResult = await crawlInstances(authCtx, config, catalog, storage, logger, mode);
     instanceResult = instanceCrawlResult;
     attendanceResult = await crawlAttendanceApprovals(
       authCtx, config, catalog, storage, logger, instanceCrawlResult.collectedKeys,

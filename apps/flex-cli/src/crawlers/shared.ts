@@ -133,6 +133,41 @@ export function nowISO(): string {
   return new Date().toISOString();
 }
 
+/**
+ * candidate가 baseline보다 시간상 더 늦은지 epoch ms로 비교한다. ISO 8601
+ * 사전식 비교는 `...00Z` vs `...00.500Z` 같이 밀리초 포함/미포함이 섞이면
+ * 시간 순서를 보장하지 않으므로 max 선택용으로 쓰면 안 된다.
+ *
+ * 잘못된 포맷:
+ *   - candidate가 invalid 또는 빈 문자열 → false (절대 baseline을 대체하지 않음)
+ *   - baseline이 invalid 또는 null → candidate가 valid이기만 하면 true
+ */
+export function isLaterIso(
+  candidate: string | null | undefined,
+  baseline: string | null | undefined,
+): boolean {
+  if (!candidate) return false;
+  const a = Date.parse(candidate);
+  if (!Number.isFinite(a)) return false;
+  if (!baseline) return true;
+  const b = Date.parse(baseline);
+  if (!Number.isFinite(b)) return true;
+  return a > b;
+}
+
+/**
+ * KST(Asia/Seoul) 기준 YYYY-MM-DD 문자열로 변환한다.
+ *
+ * flex.team의 `lastUpdatedDateRange` 필터는 timestamp가 아니라 date 단위로
+ * 동작하며 워크스페이스 timezone 기준으로 해석되는 것으로 보인다(2026-05-04
+ * 캡처). 한국 워크스페이스 운영을 가정해 KST로 정규화한다. `sv-SE` 로케일은
+ * `YYYY-MM-DD` 형식을 그대로 반환하므로 패딩 처리가 불필요하다.
+ */
+export function toKstDate(d: Date | string | number): string {
+  const date = typeof d === "object" ? d : new Date(d);
+  return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul" }).format(date);
+}
+
 /** CrawlResult 초기값 생성 */
 export function emptyCrawlResult(): CrawlResult {
   return {
