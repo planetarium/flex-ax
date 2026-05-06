@@ -84,8 +84,15 @@ function isSafeKey(key: string): boolean {
  * 손상되거나 사람이 손댄 watermark.json을 안전한 shape으로 정규화한다.
  * 의도적으로 관대하다(스키마 위반은 조용히 누락) — 워터마크는 손실되어도
  * 부트스트랩 풀크롤로 자가복구되므로 크롤 전체를 중단시키는 것보다 낫다.
+ *
+ * `now`는 미래 시각 워터마크 감지용으로만 쓰이며 호출자가 명시적으로 주입할
+ * 수 있다 (테스트 결정론). 미래 워터마크는 손편집/클록스큐 신호로 보고
+ * 그 그룹을 drop해, 다음 실행이 풀크롤로 자가복구되게 한다.
  */
-export function normalizeWatermarkFile(parsed: unknown): WatermarkFile {
+export function normalizeWatermarkFile(
+  parsed: unknown,
+  now: number = Date.now(),
+): WatermarkFile {
   if (!isPlainObject(parsed)) return {};
   const out: WatermarkFile = {};
   for (const [domain, rawState] of Object.entries(parsed)) {
@@ -104,6 +111,13 @@ export function normalizeWatermarkFile(parsed: unknown): WatermarkFile {
         if (typeof lastUpdatedAt !== "string" || lastUpdatedAt.trim().length === 0) {
           continue;
         }
+        // 미래 timestamp는 손상 신호. 그대로 두면 computeDateRange가 from>to인
+        // 잘못된 범위를 만들어 검색이 빈 결과/에러를 반환할 수 있고, 후퇴 금지
+        // 정책 때문에 자가복구도 막힌다. 여기서 그룹째 drop해 다음 실행을
+        // 풀크롤로 자가복구하게 한다. 파싱 불가 값(NaN)은 통과시키고
+        // computeDateRange의 finite 가드가 처리한다.
+        const ms = Date.parse(lastUpdatedAt);
+        if (Number.isFinite(ms) && ms > now) continue;
         const group: WatermarkGroupState = { lastUpdatedAt };
         const overlapDays = rawGroup.overlapDays;
         if (

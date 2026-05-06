@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import type { AuthContext } from "../auth/index.js";
 import type { Config } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
-import type {
-  CrawlReport,
-  StorageWriter,
-  WatermarkFile,
+import {
+  normalizeWatermarkFile,
+  type CrawlReport,
+  type StorageWriter,
+  type WatermarkFile,
 } from "../storage/index.js";
 import { crawlInstances } from "./instance.js";
 import { toKstDate } from "./shared.js";
@@ -76,7 +77,11 @@ function makeStorage(initial: WatermarkFile = {}): FakeStorage {
     saveEndpointData: async () => {},
     saveReport: async (_r: CrawlReport) => {},
     saveCatalog: async () => {},
-    loadWatermarks: async () => structuredClone(watermarks),
+    // Mirror the production storage by routing reads through the
+    // normalizer. Tests that seed pathological initial state (invalid
+    // lastUpdatedAt, future timestamps, etc.) thus exercise the same
+    // self-heal path the real disk path does.
+    loadWatermarks: async () => normalizeWatermarkFile(structuredClone(watermarks)),
     saveWatermarks: async (file) => {
       watermarks = structuredClone(file);
     },
@@ -415,6 +420,62 @@ describe("crawlInstances incremental wiring", () => {
     );
   });
 
+  it("self-heals a future-dated watermark by treating that group as bootstrap", async () => {
+    // Hand-edit / clock-skew: stored watermark is in the future. Without
+    // self-heal, computeDateRange would emit `from > to` and the search
+    // would return nothing forever.
+    const initial = {
+      approvalDocuments: {
+        groups: {
+          "in-progress": {
+            lastUpdatedAt: "2099-01-01T00:00:00Z",
+            overlapDays: 1,
+            lastSuccessfulRunAt: "2099-01-01T00:00:00Z",
+          },
+          done: {
+            lastUpdatedAt: "2026-04-25T00:00:00Z",
+            overlapDays: 2,
+            lastSuccessfulRunAt: "2026-04-25T00:00:00Z",
+          },
+        },
+      },
+    } as WatermarkFile;
+
+    const search = new Map<string, SearchResp>([
+      [
+        "IN_PROGRESS",
+        { documents: [{ document: { documentKey: "ip-ok" } }], total: 1, hasNext: false },
+      ],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    const details = new Map<string, DetailResp>([
+      ["ip-ok", detailFor("ip-ok", "2026-05-05T01:00:00Z", "IN_PROGRESS")],
+    ]);
+    const { calls } = setupFetch(search, details);
+
+    const storage = makeStorage(initial);
+    await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    // in-progress had a bad watermark → group dropped at normalize → no
+    // lastUpdatedDateRange in the in-progress search.
+    const inProgressCall = calls.find(
+      (c) =>
+        c.url.includes("/user-boxes/search") &&
+        (c.body as { filter: { statuses: string[] } }).filter.statuses[0] === "IN_PROGRESS",
+    );
+    assert.ok(inProgressCall);
+    const filter = (inProgressCall.body as { filter: Record<string, unknown> }).filter;
+    assert.ok(
+      !("lastUpdatedDateRange" in filter),
+      "future watermark must self-heal by omitting the date range",
+    );
+    // Watermark replaced by the freshly observed value.
+    assert.equal(
+      storage._watermarks.approvalDocuments!.groups["in-progress"].lastUpdatedAt,
+      "2026-05-05T01:00:00Z",
+    );
+  });
+
   it("uses epoch-ms comparison so trailing-Z and millisecond forms order correctly", async () => {
     // Stored watermark "...44Z" is *earlier* in time than a candidate
     // "...44.500Z", but a naive lexicographic comparison would place the
@@ -524,13 +585,16 @@ describe("crawlInstances incremental wiring", () => {
   });
 
   it("never regresses a watermark when observed max is older than stored", async () => {
+    // The stored watermark must be a plausible (non-future) timestamp,
+    // since the normalizer now drops future watermarks. Pick a recent
+    // date and observe an even-older one.
     const initial: WatermarkFile = {
       approvalDocuments: {
         groups: {
           "in-progress": {
-            lastUpdatedAt: "2099-01-01T00:00:00Z",
+            lastUpdatedAt: "2026-05-01T00:00:00Z",
             overlapDays: 1,
-            lastSuccessfulRunAt: "2099-01-01T00:00:00Z",
+            lastSuccessfulRunAt: "2026-05-01T00:00:00Z",
           },
         },
       },
@@ -552,7 +616,7 @@ describe("crawlInstances incremental wiring", () => {
 
     assert.equal(
       storage._watermarks.approvalDocuments!.groups["in-progress"].lastUpdatedAt,
-      "2099-01-01T00:00:00Z",
+      "2026-05-01T00:00:00Z",
     );
   });
 });

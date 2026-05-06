@@ -129,6 +129,27 @@ describe("normalizeWatermarkFile", () => {
     assert.ok(groups.ok);
   });
 
+  it("drops a group whose lastUpdatedAt is in the future relative to `now`", () => {
+    // hand-edited or clock-skewed payload: stored timestamp is later
+    // than the supplied `now`. computeDateRange would otherwise emit
+    // from > to and wedge incremental crawls.
+    const now = Date.parse("2026-05-06T00:00:00Z");
+    const result = normalizeWatermarkFile(
+      {
+        approvalDocuments: {
+          groups: {
+            future: { lastUpdatedAt: "2099-01-01T00:00:00Z" },
+            past: { lastUpdatedAt: "2026-04-29T12:00:00Z" },
+          },
+        },
+      },
+      now,
+    );
+    const groups = result.approvalDocuments!.groups;
+    assert.equal(groups.future, undefined);
+    assert.ok(groups.past);
+  });
+
   it("preserves a well-formed file unchanged in shape", () => {
     const raw: WatermarkFile = {
       approvalDocuments: {
