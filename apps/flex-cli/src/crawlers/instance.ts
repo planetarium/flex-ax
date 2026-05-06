@@ -357,6 +357,7 @@ function mapInstance(detail: DocumentDetailResponse, attachments: AttachmentInfo
     templateName: doc.templateKey,
     drafter: { id: doc.writer.idHash, name: doc.writer.name },
     draftedAt: doc.writtenAt,
+    lastUpdatedAt: doc.updatedAt ?? null,
     status: doc.status,
     approvalLine,
     fields,
