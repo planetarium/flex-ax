@@ -160,12 +160,14 @@ async function runCrawlForCustomer(
   let instanceResult: CrawlResult = emptyResult();
   let attendanceResult: CrawlResult = emptyResult();
   let catalogEndpointsResult: CrawlResult = emptyResult();
+  let instancesMissing: string[] = [];
   let fatalError: CrawlError | null = null;
 
   try {
     templateResult = await crawlTemplates(authCtx, config, catalog, storage, logger);
     const instanceCrawlResult = await crawlInstances(authCtx, config, catalog, storage, logger, mode);
     instanceResult = instanceCrawlResult;
+    instancesMissing = instanceCrawlResult.missingKeys;
     attendanceResult = await crawlAttendanceApprovals(
       authCtx, config, catalog, storage, logger, instanceCrawlResult.collectedKeys,
     );
@@ -201,6 +203,7 @@ async function runCrawlForCustomer(
     instances: instanceResult,
     attendance: attendanceResult,
     catalogEndpoints: catalogEndpointsResult,
+    instancesMissing: instancesMissing.length > 0 ? instancesMissing : undefined,
     totalErrors,
   };
 

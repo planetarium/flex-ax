@@ -186,6 +186,27 @@ describe("normalizeWatermarkFile", () => {
   });
 });
 
+describe("createStorageWriter listExistingInstanceKeys", () => {
+  it("returns an empty set when the instances directory does not exist", async () => {
+    const dir = await tmpStorageDir();
+    const writer = createStorageWriter(dir, path.join(dir, "catalog.json"));
+    const keys = await writer.listExistingInstanceKeys();
+    assert.equal(keys.size, 0);
+  });
+
+  it("returns docKeys derived from .json filenames, ignoring other entries", async () => {
+    const dir = await tmpStorageDir();
+    const instancesDir = path.join(dir, "instances");
+    await mkdir(instancesDir);
+    await writeFile(path.join(instancesDir, "doc-1.json"), "{}", "utf-8");
+    await writeFile(path.join(instancesDir, "doc-2.json"), "{}", "utf-8");
+    await writeFile(path.join(instancesDir, "README.md"), "ignore me", "utf-8");
+    const writer = createStorageWriter(dir, path.join(dir, "catalog.json"));
+    const keys = await writer.listExistingInstanceKeys();
+    assert.deepEqual([...keys].sort(), ["doc-1", "doc-2"]);
+  });
+});
+
 describe("createStorageWriter loadWatermarks", () => {
   it("returns {} when watermark.json is missing (ENOENT)", async () => {
     const dir = await tmpStorageDir();
