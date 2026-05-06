@@ -481,6 +481,27 @@ describe("crawlInstances incremental wiring", () => {
     assert.ok(stamped >= before, "lastSuccessfulRunAt must be from this run, not the prior one");
   });
 
+  it("stamps lastFullReconAt on a clean zero-doc bootstrap full crawl", async () => {
+    // Customer has no approval documents (or no access). The crawl
+    // should still record a recon marker — otherwise cadence-based
+    // auto-promotion can never advance away from this state.
+    const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    setupFetch(search, new Map());
+
+    const storage = makeStorage();
+    const before = Date.now();
+    const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    assert.equal(result.successCount, 0);
+    assert.equal(result.failureCount, 0);
+    const stamped = storage._watermarks.approvalDocuments?.lastFullReconAt;
+    assert.ok(stamped, "clean zero-doc full crawl must stamp lastFullReconAt");
+    assert.ok(Date.parse(stamped!) >= before);
+  });
+
   it("does not stamp lastFullReconAt when a bootstrap full crawl had any failure", async () => {
     const search = new Map<string, SearchResp>([
       [
