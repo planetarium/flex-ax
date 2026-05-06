@@ -142,8 +142,11 @@ export async function crawlInstances(
     });
   }
 
-  // 사실상 풀크롤로 돌았고 한 건이라도 처리했다면 lastFullReconAt 갱신.
-  if (effectiveFull && result.successCount > 0) {
+  // 사실상 풀크롤로 돌았고 인스턴스 단계에 단 1건의 실패도 없었을 때만
+  // lastFullReconAt 갱신. 실패가 섞이면 "전체 recon 완료" 의미가 흐려지므로,
+  // 후속 cadence-기반 자동 풀크롤 트리거가 사고로 다음 실행을 건너뛰지 않도록
+  // 보수적으로 잠근다.
+  if (effectiveFull && result.failureCount === 0 && result.successCount > 0) {
     domainState.lastFullReconAt = nowISO();
   }
 

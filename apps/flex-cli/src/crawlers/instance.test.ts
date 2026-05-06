@@ -481,6 +481,27 @@ describe("crawlInstances incremental wiring", () => {
     assert.ok(stamped >= before, "lastSuccessfulRunAt must be from this run, not the prior one");
   });
 
+  it("does not stamp lastFullReconAt when a bootstrap full crawl had any failure", async () => {
+    const search = new Map<string, SearchResp>([
+      [
+        "IN_PROGRESS",
+        { documents: [{ document: { documentKey: "fail-doc" } }], total: 1, hasNext: false },
+      ],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    setupFetch(search, new Map(), new Set(["fail-doc"]));
+
+    const storage = makeStorage();
+    const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    assert.equal(result.failureCount, 1);
+    assert.equal(
+      storage._watermarks.approvalDocuments?.lastFullReconAt,
+      undefined,
+      "lastFullReconAt must not be stamped when the recon had failures",
+    );
+  });
+
   it("never regresses a watermark when observed max is older than stored", async () => {
     const initial: WatermarkFile = {
       approvalDocuments: {

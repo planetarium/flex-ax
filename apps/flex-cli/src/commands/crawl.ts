@@ -19,7 +19,7 @@ import { crawlCatalogEndpoints } from "../crawlers/catalog-endpoints.js";
 import type { CrawlError } from "../types/common.js";
 import type { CrawlResult } from "../crawlers/shared.js";
 
-export async function runCrawl(args: string[] = []): Promise<void> {
+export async function runCrawl(args: string[] = process.argv.slice(3)): Promise<void> {
   const logger = createLogger("CRAWL");
 
   let config: Config;
