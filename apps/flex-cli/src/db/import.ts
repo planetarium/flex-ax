@@ -85,8 +85,8 @@ export async function importToSqlite(
       INSERT OR IGNORE INTO templates (id, name) VALUES (?, ?)
     `),
     instance: db.prepare(`
-      INSERT OR REPLACE INTO instances (id, document_number, template_id, drafter_id, drafted_at, status, content_html, raw)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO instances (id, document_number, template_id, drafter_id, drafted_at, last_updated_at, status, content_html, raw)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
     fieldValue: db.prepare(`
       INSERT OR REPLACE INTO field_values (instance_id, field_name, field_type, value_text, value_number, value_date, currency)
@@ -268,6 +268,7 @@ function importInstance(
     data.templateId,
     drafter?.id ?? null,
     data.draftedAt,
+    data.lastUpdatedAt ?? doc?.updatedAt ?? null,
     data.status,
     (doc?.content as string) ?? null,
     JSON.stringify(raw ?? null),

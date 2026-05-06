@@ -14,6 +14,7 @@ export interface WorkflowInstance {
   templateName: string;
   drafter: UserInfo;
   draftedAt: string;
+  lastUpdatedAt: string | null;
   status: ApprovalStatus;
   approvalLine: ApprovalStep[];
   fields: FieldValue[];

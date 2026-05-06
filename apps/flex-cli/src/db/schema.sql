@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS instances (
   template_id     TEXT NOT NULL REFERENCES templates(id),
   drafter_id      TEXT REFERENCES users(id),
   drafted_at      TEXT NOT NULL,          -- [PG] → TIMESTAMPTZ
+  last_updated_at TEXT,                   -- [PG] → TIMESTAMPTZ, flex document.updatedAt
   status          TEXT NOT NULL,
   content_html    TEXT,
   raw             TEXT                    -- [PG] → JSONB
@@ -63,6 +64,7 @@ CREATE INDEX IF NOT EXISTS idx_instances_drafter         ON instances(drafter_id
 CREATE INDEX IF NOT EXISTS idx_instances_drafted_at      ON instances(drafted_at);
 CREATE INDEX IF NOT EXISTS idx_instances_status          ON instances(status);
 CREATE INDEX IF NOT EXISTS idx_instances_doc_number      ON instances(document_number);
+CREATE INDEX IF NOT EXISTS idx_instances_last_updated_at ON instances(last_updated_at DESC);
 
 -- ============================================================
 -- 필드값 (EAV)
