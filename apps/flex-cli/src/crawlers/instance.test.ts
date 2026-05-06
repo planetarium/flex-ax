@@ -452,6 +452,35 @@ describe("crawlInstances incremental wiring", () => {
     );
   });
 
+  it("stamps lastSuccessfulRunAt on a clean zero-doc run while preserving lastUpdatedAt", async () => {
+    const initial: WatermarkFile = {
+      approvalDocuments: {
+        groups: {
+          "in-progress": {
+            lastUpdatedAt: "2026-04-29T12:00:00Z",
+            overlapDays: 1,
+            lastSuccessfulRunAt: "2026-04-30T00:00:00Z",
+          },
+        },
+      },
+    };
+    const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    setupFetch(search, new Map());
+
+    const storage = makeStorage(initial);
+    const before = Date.now();
+    await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    const wm = storage._watermarks.approvalDocuments!.groups["in-progress"];
+    assert.equal(wm.lastUpdatedAt, "2026-04-29T12:00:00Z", "lastUpdatedAt must be preserved");
+    assert.ok(wm.lastSuccessfulRunAt, "lastSuccessfulRunAt must be set");
+    const stamped = Date.parse(wm.lastSuccessfulRunAt!);
+    assert.ok(stamped >= before, "lastSuccessfulRunAt must be from this run, not the prior one");
+  });
+
   it("never regresses a watermark when observed max is older than stored", async () => {
     const initial: WatermarkFile = {
       approvalDocuments: {

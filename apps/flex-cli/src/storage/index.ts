@@ -16,11 +16,20 @@ import type { CrawlResult } from "../crawlers/shared.js";
  */
 export interface WatermarkGroupState {
   lastUpdatedAt: string;
-  /** 다음 실행 시 검색 from 날짜를 워터마크보다 N일 앞당긴다. flex의 date-단위 필터 잘림 보정용 */
-  overlapDays: number;
-  /** 마지막으로 이 그룹이 성공적으로 수집된 시각 (정보용) */
-  lastSuccessfulRunAt: string;
+  /**
+   * 다음 실행 시 검색 from 날짜를 워터마크보다 N일 앞당긴다. flex의 date-단위 필터 잘림 보정용.
+   * Optional — 누락 시 호출자가 group 단위 default를 사용한다.
+   */
+  overlapDays?: number;
+  /**
+   * 마지막으로 이 그룹이 성공적으로 수집된 시각 (정보용). Optional — 사용자가
+   * watermark.json을 손으로 편집할 때 이 필드를 빠뜨려도 워터마크 자체는 살린다.
+   */
+  lastSuccessfulRunAt?: string;
 }
+
+/** overlapDays로 받아들일 수 있는 정수 상한. 그 이상은 손상으로 간주해 default fallback. */
+const MAX_OVERLAP_DAYS = 365;
 
 export interface WatermarkDomainState {
   groups: Record<string, WatermarkGroupState>;
@@ -78,16 +87,24 @@ export function normalizeWatermarkFile(parsed: unknown): WatermarkFile {
       for (const [label, rawGroup] of Object.entries(groupsCandidate)) {
         if (!isPlainObject(rawGroup)) continue;
         const lastUpdatedAt = rawGroup.lastUpdatedAt;
+        // lastUpdatedAt만이 워터마크의 본질. 나머지는 누락/이상값이면 omit해서
+        // 호출자가 default로 폴백하게 한다 (=그룹 자체를 잃지 않는다).
+        if (typeof lastUpdatedAt !== "string") continue;
+        const group: WatermarkGroupState = { lastUpdatedAt };
         const overlapDays = rawGroup.overlapDays;
-        const lastSuccessfulRunAt = rawGroup.lastSuccessfulRunAt;
         if (
-          typeof lastUpdatedAt !== "string" ||
-          typeof overlapDays !== "number" ||
-          typeof lastSuccessfulRunAt !== "string"
+          typeof overlapDays === "number" &&
+          Number.isInteger(overlapDays) &&
+          overlapDays >= 0 &&
+          overlapDays <= MAX_OVERLAP_DAYS
         ) {
-          continue;
+          group.overlapDays = overlapDays;
         }
-        groups[label] = { lastUpdatedAt, overlapDays, lastSuccessfulRunAt };
+        const lastSuccessfulRunAt = rawGroup.lastSuccessfulRunAt;
+        if (typeof lastSuccessfulRunAt === "string") {
+          group.lastSuccessfulRunAt = lastSuccessfulRunAt;
+        }
+        groups[label] = group;
       }
     }
     const lastFullReconAt = (rawState as Record<string, unknown>).lastFullReconAt;

@@ -49,6 +49,40 @@ describe("normalizeWatermarkFile", () => {
     assert.equal(wm.lastFullReconAt, "2026-04-20T00:00:00Z");
   });
 
+  it("keeps a group when only lastUpdatedAt is present (informational fields are optional)", () => {
+    const result = normalizeWatermarkFile({
+      approvalDocuments: {
+        groups: {
+          "in-progress": { lastUpdatedAt: "2026-04-29T12:00:00Z" },
+        },
+      },
+    });
+    const g = result.approvalDocuments!.groups["in-progress"];
+    assert.equal(g.lastUpdatedAt, "2026-04-29T12:00:00Z");
+    assert.equal(g.overlapDays, undefined);
+    assert.equal(g.lastSuccessfulRunAt, undefined);
+  });
+
+  it("omits out-of-range overlapDays but keeps the group", () => {
+    const result = normalizeWatermarkFile({
+      approvalDocuments: {
+        groups: {
+          neg: { lastUpdatedAt: "2026-04-29T12:00:00Z", overlapDays: -1 },
+          tooBig: { lastUpdatedAt: "2026-04-29T12:00:00Z", overlapDays: 100000 },
+          fractional: { lastUpdatedAt: "2026-04-29T12:00:00Z", overlapDays: 1.5 },
+          nan: { lastUpdatedAt: "2026-04-29T12:00:00Z", overlapDays: Number.NaN },
+          ok: { lastUpdatedAt: "2026-04-29T12:00:00Z", overlapDays: 2 },
+        },
+      },
+    });
+    const groups = result.approvalDocuments!.groups;
+    for (const label of ["neg", "tooBig", "fractional", "nan"]) {
+      assert.ok(groups[label], `group ${label} must survive`);
+      assert.equal(groups[label].overlapDays, undefined);
+    }
+    assert.equal(groups.ok.overlapDays, 2);
+  });
+
   it("preserves a well-formed file unchanged in shape", () => {
     const raw: WatermarkFile = {
       approvalDocuments: {

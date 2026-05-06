@@ -102,22 +102,24 @@ export async function crawlInstances(
 
       // 그룹 단위로 워터마크 갱신 정책:
       //   - 그룹 내 실패가 단 1건이라도 있으면 갱신 보류 (다음 실행에서 재시도)
-      //   - 후퇴 금지 — 새 max가 기존보다 작으면 기존 유지
-      //   - 0건 처리됐어도 후퇴/삭제 금지
-      if (groupFailure === 0 && observedMaxUpdatedAt) {
+      //   - 후퇴 금지 — 새 max가 기존보다 작으면 기존 lastUpdatedAt 유지
+      //   - 0건 처리됐어도 그룹 자체가 클린하게 끝났으면 lastSuccessfulRunAt은 갱신
+      if (groupFailure === 0) {
         const prev = existing?.lastUpdatedAt ?? null;
-        if (isLaterIso(observedMaxUpdatedAt, prev)) {
+        if (observedMaxUpdatedAt && isLaterIso(observedMaxUpdatedAt, prev)) {
           domainState.groups[group.label] = {
             lastUpdatedAt: observedMaxUpdatedAt,
             overlapDays: existing?.overlapDays ?? group.defaultOverlapDays,
             lastSuccessfulRunAt: nowISO(),
           };
         } else if (existing) {
+          // 0건이거나 후퇴 케이스 — lastUpdatedAt은 보존, 성공 마감 시각만 갱신
           domainState.groups[group.label] = {
             ...existing,
             lastSuccessfulRunAt: nowISO(),
           };
         }
+        // existing도 없고 observed도 없으면 commit할 게 없음 (no-op)
       }
 
       logger.info("인스턴스 그룹 종료", {
