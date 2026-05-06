@@ -40,6 +40,11 @@ export async function importToSqlite(
   // schema.sql 적용 (빌드 시점에 텍스트로 인라인됨)
   db.exec(schemaSql);
 
+  // 기존 DB 파일에 누락된 컬럼/인덱스 보강. CREATE TABLE IF NOT EXISTS는
+  // 기존 테이블의 컬럼을 변경하지 않으므로, 새로 추가되는 컬럼은 여기서
+  // ALTER TABLE로 보강해 주어야 한다.
+  runMigrations(db);
+
   // 사용자 수집용
   const users = new Map<string, { name: string; aliases: Set<string> }>();
 
@@ -381,6 +386,18 @@ function importInstance(
     );
     result.comments++;
   }
+}
+
+function runMigrations(db: Database): void {
+  const instanceCols = db
+    .query("PRAGMA table_info(instances)")
+    .all() as { name: string }[];
+  if (!instanceCols.some((c) => c.name === "last_updated_at")) {
+    db.exec("ALTER TABLE instances ADD COLUMN last_updated_at TEXT");
+  }
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_instances_last_updated_at ON instances(last_updated_at DESC)",
+  );
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

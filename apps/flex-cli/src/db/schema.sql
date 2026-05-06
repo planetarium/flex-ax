@@ -64,7 +64,10 @@ CREATE INDEX IF NOT EXISTS idx_instances_drafter         ON instances(drafter_id
 CREATE INDEX IF NOT EXISTS idx_instances_drafted_at      ON instances(drafted_at);
 CREATE INDEX IF NOT EXISTS idx_instances_status          ON instances(status);
 CREATE INDEX IF NOT EXISTS idx_instances_doc_number      ON instances(document_number);
-CREATE INDEX IF NOT EXISTS idx_instances_last_updated_at ON instances(last_updated_at DESC);
+-- idx_instances_last_updated_at: see runMigrations() in import.ts. The index
+-- depends on a column that was added after the initial schema, so creating it
+-- here would abort `db.exec(schemaSql)` on older DB files where the column
+-- has not yet been ALTERed in.
 
 -- ============================================================
 -- 필드값 (EAV)
