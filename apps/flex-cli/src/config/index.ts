@@ -68,6 +68,13 @@ const configSchema = z.object({
         .map((s) => s.trim())
         .filter((s) => s.length > 0),
     ),
+  /**
+   * 결재 문서 인스턴스 크롤 모드.
+   * - "incremental"(기본): 워터마크가 있으면 `lastUpdatedDateRange`를 적용해 증분 수집.
+   *   워터마크가 없으면 자동으로 부트스트랩 풀크롤로 폴백.
+   * - "full": 워터마크 무시, 날짜 필터 없이 전체 재수집. CLI `--full`로도 강제할 수 있다.
+   */
+  flexCrawlMode: z.enum(["incremental", "full"]).default("incremental"),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -89,5 +96,6 @@ export function loadConfig(): Config {
     crawlSensitive: process.env.FLEX_CRAWL_SENSITIVE || undefined,
     skipEndpoints: process.env.FLEX_SKIP_ENDPOINTS || undefined,
     customers: process.env.FLEX_CUSTOMERS || undefined,
+    flexCrawlMode: process.env.FLEX_CRAWL_MODE || undefined,
   });
 }

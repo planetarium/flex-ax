@@ -1,7 +1,11 @@
 import { type AuthContext, apiHeaders } from "../auth/index.js";
 import type { Config } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
-import type { StorageWriter } from "../storage/index.js";
+import type {
+  StorageWriter,
+  WatermarkDomainState,
+  WatermarkGroupState,
+} from "../storage/index.js";
 import type { ApiCatalog } from "../types/catalog.js";
 import type { WorkflowInstance } from "../types/instance.js";
 import type { ApprovalStep, AttachmentInfo, FieldValue } from "../types/common.js";
@@ -9,6 +13,7 @@ import {
   type CrawlResult,
   emptyCrawlResult,
   nowISO,
+  toKstDate,
   withRetry,
   flexFetch,
   flexPost,
@@ -16,18 +21,29 @@ import {
   pooledMap,
 } from "./shared.js";
 
+export type CrawlMode = "incremental" | "full";
+
+const APPROVAL_DOCUMENTS_DOMAIN = "approvalDocuments";
+const MS_PER_DAY = 86_400_000;
+
+interface DateRange {
+  from: string;
+  to: string;
+}
+
 export async function crawlInstances(
   authCtx: AuthContext,
   config: Config,
   catalog: ApiCatalog | null,
   storage: StorageWriter,
   logger: Logger,
+  mode: CrawlMode = "incremental",
 ): Promise<CrawlResult & { collectedKeys: Set<string> }> {
   const startTime = Date.now();
   const result = emptyCrawlResult();
   const collectedKeys = new Set<string>();
 
-  logger.info("인스턴스(결재 문서) 수집 시작");
+  logger.info("인스턴스(결재 문서) 수집 시작", { mode });
 
   const searchUrl = resolveUrl(
     config.flexBaseUrl, catalog, "instance-search",
@@ -38,14 +54,36 @@ export async function crawlInstances(
     "/api/v3/approval-document/approval-documents",
   );
 
-  try {
-    const searchGroups: SearchGroup[] = [
-      { label: "in-progress", statuses: ["IN_PROGRESS"] },
-      { label: "done", statuses: ["DONE", "DECLINED", "CANCELED"] },
-    ];
+  const searchGroups: SearchGroup[] = [
+    { label: "in-progress", statuses: ["IN_PROGRESS"], defaultOverlapDays: 1 },
+    { label: "done", statuses: ["DONE", "DECLINED", "CANCELED"], defaultOverlapDays: 2 },
+  ];
 
+  const watermarks = await storage.loadWatermarks();
+  const domainState: WatermarkDomainState =
+    watermarks[APPROVAL_DOCUMENTS_DOMAIN] ?? { groups: {} };
+  // 모든 그룹에 워터마크가 모두 비어 있다면 부트스트랩 — 사실상 풀크롤로 동작.
+  const noWatermarks = searchGroups.every(
+    (g) => !domainState.groups[g.label]?.lastUpdatedAt,
+  );
+  const effectiveFull = mode === "full" || noWatermarks;
+  if (mode === "incremental" && noWatermarks) {
+    logger.info("워터마크 없음 — bootstrap 풀크롤로 진행");
+  }
+  // to 날짜는 그룹 진입 전에 한 번 캡처해서 페이지/그룹 간 일관되게 사용.
+  const todayKst = toKstDate(new Date());
+
+  try {
     for (const group of searchGroups) {
-      await crawlSearchGroup(
+      const existing = domainState.groups[group.label];
+      const dateRange = effectiveFull
+        ? undefined
+        : computeDateRange(existing, group.defaultOverlapDays, todayKst);
+
+      const groupSuccessBefore = result.successCount;
+      const groupFailureBefore = result.failureCount;
+
+      const observedMaxUpdatedAt = await crawlSearchGroup(
         authCtx,
         config,
         storage,
@@ -55,7 +93,39 @@ export async function crawlInstances(
         searchUrl,
         detailBase,
         group,
+        dateRange,
       );
+
+      const groupSuccess = result.successCount - groupSuccessBefore;
+      const groupFailure = result.failureCount - groupFailureBefore;
+
+      // 그룹 단위로 워터마크 갱신 정책:
+      //   - 그룹 내 실패가 단 1건이라도 있으면 갱신 보류 (다음 실행에서 재시도)
+      //   - 후퇴 금지 — 새 max가 기존보다 작으면 기존 유지
+      //   - 0건 처리됐어도 후퇴/삭제 금지
+      if (groupFailure === 0 && observedMaxUpdatedAt) {
+        const prev = existing?.lastUpdatedAt ?? null;
+        if (!prev || observedMaxUpdatedAt > prev) {
+          domainState.groups[group.label] = {
+            lastUpdatedAt: observedMaxUpdatedAt,
+            overlapDays: existing?.overlapDays ?? group.defaultOverlapDays,
+            lastSuccessfulRunAt: nowISO(),
+          };
+        } else if (existing) {
+          domainState.groups[group.label] = {
+            ...existing,
+            lastSuccessfulRunAt: nowISO(),
+          };
+        }
+      }
+
+      logger.info("인스턴스 그룹 종료", {
+        group: group.label,
+        groupSuccess,
+        groupFailure,
+        observedMaxUpdatedAt,
+        committedWatermark: domainState.groups[group.label]?.lastUpdatedAt ?? null,
+      });
     }
   } catch (error) {
     logger.error("인스턴스 목록 수집 중 치명적 오류", {
@@ -69,6 +139,20 @@ export async function crawlInstances(
     });
   }
 
+  // 사실상 풀크롤로 돌았고 한 건이라도 처리했다면 lastFullReconAt 갱신.
+  if (effectiveFull && result.successCount > 0) {
+    domainState.lastFullReconAt = nowISO();
+  }
+
+  watermarks[APPROVAL_DOCUMENTS_DOMAIN] = domainState;
+  try {
+    await storage.saveWatermarks(watermarks);
+  } catch (saveError) {
+    logger.error("워터마크 저장 실패 — 다음 실행에서 동일 범위 재수집 가능", {
+      error: saveError instanceof Error ? saveError.message : String(saveError),
+    });
+  }
+
   result.durationMs = Date.now() - startTime;
   logger.info(`\n인스턴스 수집 완료: 성공 ${result.successCount}, 실패 ${result.failureCount}`);
   return { ...result, collectedKeys };
@@ -77,6 +161,18 @@ export async function crawlInstances(
 interface SearchGroup {
   label: string;
   statuses: string[];
+  defaultOverlapDays: number;
+}
+
+function computeDateRange(
+  watermark: WatermarkGroupState | undefined,
+  defaultOverlapDays: number,
+  todayKst: string,
+): DateRange | undefined {
+  if (!watermark?.lastUpdatedAt) return undefined;
+  const overlapDays = watermark.overlapDays ?? defaultOverlapDays;
+  const fromMs = new Date(watermark.lastUpdatedAt).getTime() - overlapDays * MS_PER_DAY;
+  return { from: toKstDate(new Date(fromMs)), to: todayKst };
 }
 
 async function crawlSearchGroup(
@@ -89,15 +185,20 @@ async function crawlSearchGroup(
   searchUrl: string,
   detailBase: string,
   group: SearchGroup,
-): Promise<void> {
+  dateRange: DateRange | undefined,
+): Promise<string | null> {
   logger.info("인스턴스 검색 그룹 시작", {
     group: group.label,
     statuses: group.statuses,
+    lastUpdatedDateRange: dateRange ?? null,
   });
 
   let continuationToken: string | undefined;
   let hasMore = true;
   let isFirstPage = true;
+  // 이번 그룹에서 성공적으로 상세까지 가져온 문서들의 document.updatedAt
+  // 최댓값. 워커가 동시에 갱신하므로 단순 비교/대입(JS 단일 스레드 보장).
+  let groupMaxUpdatedAt: string | null = null;
 
   while (hasMore) {
     const searchBody = {
@@ -108,6 +209,7 @@ async function crawlSearchGroup(
         approverTargets: [],
         referrerTargets: [],
         starred: false,
+        ...(dateRange ? { lastUpdatedDateRange: dateRange } : {}),
       },
       search: { keyword: "", type: "ALL" },
     };
@@ -173,6 +275,10 @@ async function crawlSearchGroup(
 
         const instance = mapInstance(detail, attachments);
         await storage.saveInstance(instance);
+        const observed = detail.document.updatedAt ?? null;
+        if (observed && (!groupMaxUpdatedAt || observed > groupMaxUpdatedAt)) {
+          groupMaxUpdatedAt = observed;
+        }
         collectedKeys.add(docKey);
         result.successCount++;
       } catch (error) {
@@ -225,6 +331,8 @@ async function crawlSearchGroup(
 
     continuationToken = nextContinuationToken;
   }
+
+  return groupMaxUpdatedAt;
 }
 
 // --- flex API 응답 타입 ---

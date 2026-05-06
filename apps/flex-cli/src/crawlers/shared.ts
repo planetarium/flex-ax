@@ -133,6 +133,19 @@ export function nowISO(): string {
   return new Date().toISOString();
 }
 
+/**
+ * KST(Asia/Seoul) 기준 YYYY-MM-DD 문자열로 변환한다.
+ *
+ * flex.team의 `lastUpdatedDateRange` 필터는 timestamp가 아니라 date 단위로
+ * 동작하며 워크스페이스 timezone 기준으로 해석되는 것으로 보인다(2026-05-04
+ * 캡처). 한국 워크스페이스 운영을 가정해 KST로 정규화한다. `sv-SE` 로케일은
+ * `YYYY-MM-DD` 형식을 그대로 반환하므로 패딩 처리가 불필요하다.
+ */
+export function toKstDate(d: Date | string | number): string {
+  const date = typeof d === "object" ? d : new Date(d);
+  return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul" }).format(date);
+}
+
 /** CrawlResult 초기값 생성 */
 export function emptyCrawlResult(): CrawlResult {
   return {

@@ -30,6 +30,7 @@ Env:
   FLEX_PASSWORD
   FLEX_BASE_URL
   FLEX_CUSTOMERS
+  FLEX_CRAWL_MODE=incremental|full   (default: incremental — 워터마크 없으면 부트스트랩 풀크롤)
   FLEX_AX_AUTO_UPDATE=false
 `,
 );
@@ -87,9 +88,9 @@ addPassthroughCommand(program, "status", "현재 등록 상태 표시", async ()
   await runStatus();
 });
 
-addPassthroughCommand(program, "crawl", "카탈로그 기반 크롤링", async () => {
+addPassthroughCommand(program, "crawl", "카탈로그 기반 크롤링", async (args) => {
   const { runCrawl } = await import("./commands/crawl.js");
-  await runCrawl();
+  await runCrawl(args);
 });
 
 addPassthroughCommand(program, "import", "크롤링 결과를 SQLite로 변환", async () => {

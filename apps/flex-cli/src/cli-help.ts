@@ -44,6 +44,8 @@ Env:
                               (CI에서 사용)
   FLEX_BASE_URL               기본 https://flex.team
   FLEX_CUSTOMERS              크롤 대상 법인 customerIdHash (콤마 구분)
+  FLEX_CRAWL_MODE             incremental(기본) | full
+                              full 은 결재 문서 워터마크를 무시하고 전체 재수집
   FLEX_AX_AUTO_UPDATE=false   기동 시 자동 업데이트 비활성화`;
 
 const COMMAND_HELP: Record<string, string> = {
@@ -59,9 +61,17 @@ OS 키링에서 저장된 비밀번호를 삭제합니다.
   status: `Usage: flex-ax status
 
 현재 등록된 로그인 상태를 표시합니다.`,
-  crawl: `Usage: flex-ax crawl
+  crawl: `Usage: flex-ax crawl [--full]
 
-카탈로그 기반으로 데이터를 수집해 output/ 아래에 저장합니다.`,
+카탈로그 기반으로 데이터를 수집해 output/ 아래에 저장합니다.
+
+결재 문서 인스턴스는 기본적으로 증분 수집(incremental)으로 동작합니다.
+customer 단위로 output/<customerIdHash>/watermark.json 을 두고, 다음 실행
+시 flex 검색 요청에 lastUpdatedDateRange (KST 기준)을 적용합니다. 워터마크가
+없는 첫 실행은 자동으로 부트스트랩 풀크롤로 폴백합니다.
+
+Options:
+  --full          워터마크 무시, 결재 문서 전체 재수집 (env: FLEX_CRAWL_MODE=full)`,
   import: `Usage: flex-ax import
 
 크롤링 결과(JSON)를 SQLite로 변환합니다.
