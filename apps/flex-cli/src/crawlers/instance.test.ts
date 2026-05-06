@@ -239,9 +239,15 @@ describe("crawlInstances incremental wiring", () => {
     ]);
     const { calls } = setupFetch(search, new Map());
 
+    // Capture today both before and after the crawl so that an
+    // (extremely rare) KST-midnight crossing during the test doesn't
+    // make the comparison flaky — `to` must equal whichever value the
+    // crawl observed when it built todayKst.
+    const todayBefore = toKstDate(new Date());
     await crawlInstances(makeAuth(), makeConfig(), null, makeStorage(initial), makeLogger());
+    const todayAfter = toKstDate(new Date());
+    const acceptableTodays = new Set([todayBefore, todayAfter]);
 
-    const today = toKstDate(new Date());
     const inProgressCall = calls.find(
       (c) =>
         c.url.includes("/user-boxes/search") &&
@@ -249,11 +255,12 @@ describe("crawlInstances incremental wiring", () => {
         (c.body as { filter: { statuses: string[] } }).filter.statuses[0] === "IN_PROGRESS",
     );
     assert.ok(inProgressCall);
-    const ipFilter = (inProgressCall.body as { filter: Record<string, unknown> }).filter;
-    assert.deepEqual(ipFilter.lastUpdatedDateRange, {
-      from: "2026-04-28", // KST(2026-04-29 21:17 KST) - 1d = 2026-04-28
-      to: today,
-    });
+    const ipRange = (
+      (inProgressCall.body as { filter: { lastUpdatedDateRange: { from: string; to: string } } })
+        .filter.lastUpdatedDateRange
+    );
+    assert.equal(ipRange.from, "2026-04-28"); // KST(2026-04-29 21:17 KST) - 1d
+    assert.ok(acceptableTodays.has(ipRange.to), `to=${ipRange.to} must be a today-KST value`);
 
     const doneCall = calls.find(
       (c) =>
@@ -261,11 +268,12 @@ describe("crawlInstances incremental wiring", () => {
         (c.body as { filter: { statuses: string[] } }).filter.statuses.includes("DONE"),
     );
     assert.ok(doneCall);
-    const doneFilter = (doneCall.body as { filter: Record<string, unknown> }).filter;
-    assert.deepEqual(doneFilter.lastUpdatedDateRange, {
-      from: "2026-04-23", // KST(2026-04-25 12:00 KST) - 2d = 2026-04-23
-      to: today,
-    });
+    const doneRange = (
+      (doneCall.body as { filter: { lastUpdatedDateRange: { from: string; to: string } } })
+        .filter.lastUpdatedDateRange
+    );
+    assert.equal(doneRange.from, "2026-04-23"); // KST(2026-04-25 12:00 KST) - 2d
+    assert.ok(acceptableTodays.has(doneRange.to), `to=${doneRange.to} must be a today-KST value`);
   });
 
   it("mode=full ignores existing watermarks and skips lastUpdatedDateRange", async () => {
@@ -474,6 +482,26 @@ describe("crawlInstances incremental wiring", () => {
       storage._watermarks.approvalDocuments!.groups["in-progress"].lastUpdatedAt,
       "2026-05-05T01:00:00Z",
     );
+  });
+
+  it("records a structured error when saveWatermarks fails", async () => {
+    const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    setupFetch(search, new Map());
+
+    const storage = makeStorage();
+    storage.saveWatermarks = async () => {
+      throw new Error("disk full");
+    };
+
+    const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    const saveErr = result.errors.find((e) => e.phase === "save-watermark");
+    assert.ok(saveErr, "save-watermark failure must surface in result.errors");
+    assert.equal(saveErr.target, "instance-watermark");
+    assert.match(saveErr.message, /disk full/);
   });
 
   it("uses epoch-ms comparison so trailing-Z and millisecond forms order correctly", async () => {

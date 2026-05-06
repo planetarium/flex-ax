@@ -150,6 +150,24 @@ describe("normalizeWatermarkFile", () => {
     assert.ok(groups.past);
   });
 
+  it("does not drop a watermark when the local clock skews a few minutes (same KST date)", () => {
+    // Watermark timestamp is "after" `now` in epoch ms but falls on the
+    // same KST calendar day. Treating that as a future-drop would make
+    // every NTP-skewed run fall back to bootstrap.
+    const now = Date.parse("2026-05-06T12:00:00Z");
+    const result = normalizeWatermarkFile(
+      {
+        approvalDocuments: {
+          groups: {
+            skewed: { lastUpdatedAt: "2026-05-06T12:02:00Z" },
+          },
+        },
+      },
+      now,
+    );
+    assert.ok(result.approvalDocuments!.groups.skewed);
+  });
+
   it("preserves a well-formed file unchanged in shape", () => {
     const raw: WatermarkFile = {
       approvalDocuments: {

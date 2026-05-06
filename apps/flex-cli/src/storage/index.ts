@@ -5,7 +5,7 @@ import type { AttendanceApproval } from "../types/attendance.js";
 import type { WorkflowInstance } from "../types/instance.js";
 import type { WorkflowTemplate } from "../types/template.js";
 import type { ApiCatalog } from "../types/catalog.js";
-import type { CrawlResult } from "../crawlers/shared.js";
+import { type CrawlResult, toKstDate } from "../crawlers/shared.js";
 
 /**
  * customer 단위 증분 수집 워터마크. 도메인(예: `approvalDocuments`)별로
@@ -94,6 +94,7 @@ export function normalizeWatermarkFile(
   now: number = Date.now(),
 ): WatermarkFile {
   if (!isPlainObject(parsed)) return {};
+  const todayKst = toKstDate(now);
   const out: WatermarkFile = {};
   for (const [domain, rawState] of Object.entries(parsed)) {
     if (!isSafeKey(domain)) continue;
@@ -113,11 +114,14 @@ export function normalizeWatermarkFile(
         }
         // 미래 timestamp는 손상 신호. 그대로 두면 computeDateRange가 from>to인
         // 잘못된 범위를 만들어 검색이 빈 결과/에러를 반환할 수 있고, 후퇴 금지
-        // 정책 때문에 자가복구도 막힌다. 여기서 그룹째 drop해 다음 실행을
-        // 풀크롤로 자가복구하게 한다. 파싱 불가 값(NaN)은 통과시키고
-        // computeDateRange의 finite 가드가 처리한다.
+        // 정책 때문에 자가복구도 막힌다. 그러나 비교 기준을 epoch ms로 두면
+        // 운영 환경의 NTP skew(수초~수분) 만으로도 정상 워터마크가 미래 판정을
+        // 받아 매 실행 부트스트랩으로 폴백할 수 있어, 여기선 KST date 기준으로
+        // 비교한다 — 같은 날이면 통과, 그 다음날 이후로 명확히 미래일 때만
+        // 그룹째 drop해 다음 실행을 풀크롤로 자가복구하게 한다. 파싱 불가
+        // 값(NaN)은 통과시키고 computeDateRange의 finite 가드가 처리한다.
         const ms = Date.parse(lastUpdatedAt);
-        if (Number.isFinite(ms) && ms > now) continue;
+        if (Number.isFinite(ms) && toKstDate(ms) > todayKst) continue;
         const group: WatermarkGroupState = { lastUpdatedAt };
         const overlapDays = rawGroup.overlapDays;
         if (

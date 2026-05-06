@@ -155,8 +155,15 @@ export async function crawlInstances(
   try {
     await storage.saveWatermarks(watermarks);
   } catch (saveError) {
-    logger.error("워터마크 저장 실패 — 다음 실행에서 동일 범위 재수집 가능", {
-      error: saveError instanceof Error ? saveError.message : String(saveError),
+    const message = saveError instanceof Error ? saveError.message : String(saveError);
+    logger.error("워터마크 저장 실패 — 다음 실행에서 동일 범위 재수집 가능", { error: message });
+    // 보고서/exit code만 보는 환경에서도 운영자가 알아챌 수 있도록 구조화된
+    // 에러로 남긴다 (크롤은 비치명적으로 계속 진행).
+    result.errors.push({
+      target: "instance-watermark",
+      phase: "save-watermark",
+      message,
+      timestamp: nowISO(),
     });
   }
 
