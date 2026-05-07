@@ -278,8 +278,8 @@ async function crawlSearchGroup(
   // wall clock보다 크게 나온다 — 그래서 평균(=mean)과 카운트도 함께 노출해
   // "어디서 시간을 쓰는지"를 비교 가능하게 한다.
   const phaseTotals = { detailMs: 0, attachmentsMs: 0, saveMs: 0 };
+  const phaseMaxes = { detailMs: 0, attachmentsMs: 0, saveMs: 0 };
   let detailCount = 0;
-  let detailMaxMs = 0;
 
   while (hasMore) {
     const searchBody = {
@@ -360,19 +360,23 @@ async function crawlSearchGroup(
         );
         const detailMs = Date.now() - detailStart;
         phaseTotals.detailMs += detailMs;
-        if (detailMs > detailMaxMs) detailMaxMs = detailMs;
+        if (detailMs > phaseMaxes.detailMs) phaseMaxes.detailMs = detailMs;
         detailCount++;
 
         const attachStart = Date.now();
         const attachments = await processAttachments(
           authCtx, config, docKey, detail.document.attachments ?? [], storage, logger,
         );
-        phaseTotals.attachmentsMs += Date.now() - attachStart;
+        const attachMs = Date.now() - attachStart;
+        phaseTotals.attachmentsMs += attachMs;
+        if (attachMs > phaseMaxes.attachmentsMs) phaseMaxes.attachmentsMs = attachMs;
 
         const instance = mapInstance(detail, attachments);
         const saveStart = Date.now();
         await storage.saveInstance(instance);
-        phaseTotals.saveMs += Date.now() - saveStart;
+        const saveMs = Date.now() - saveStart;
+        phaseTotals.saveMs += saveMs;
+        if (saveMs > phaseMaxes.saveMs) phaseMaxes.saveMs = saveMs;
         const observed = detail.document.updatedAt ?? null;
         if (isLaterIso(observed, groupMaxUpdatedAt)) {
           groupMaxUpdatedAt = observed;
@@ -444,10 +448,18 @@ async function crawlSearchGroup(
     detail: {
       totalMs: phaseTotals.detailMs,
       meanMs: Math.round(detailMean),
-      maxMs: detailMaxMs,
+      maxMs: phaseMaxes.detailMs,
     },
-    attachments: { totalMs: phaseTotals.attachmentsMs, meanMs: Math.round(attachmentsMean) },
-    save: { totalMs: phaseTotals.saveMs, meanMs: Math.round(saveMean) },
+    attachments: {
+      totalMs: phaseTotals.attachmentsMs,
+      meanMs: Math.round(attachmentsMean),
+      maxMs: phaseMaxes.attachmentsMs,
+    },
+    save: {
+      totalMs: phaseTotals.saveMs,
+      meanMs: Math.round(saveMean),
+      maxMs: phaseMaxes.saveMs,
+    },
     concurrency: config.concurrency,
   });
 

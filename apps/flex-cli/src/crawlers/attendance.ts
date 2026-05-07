@@ -185,7 +185,7 @@ async function getUserId(
   authCtx: AuthContext,
   config: Config,
   logger: Logger,
-  onRetry?: () => void,
+  onRetry?: (attempt: number, error: unknown) => void,
 ): Promise<string | null> {
   try {
     // /api/v2/core/me는 404이므로, workspace-users에서 currentUser를 가져옴.

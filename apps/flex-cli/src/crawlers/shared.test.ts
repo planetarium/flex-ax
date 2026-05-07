@@ -40,7 +40,7 @@ describe("withRetry onRetry callback", () => {
       },
       {
         maxRetries: 5,
-        delayMs: 0,
+        delayMs: 1,
         onRetry: (attempt) => {
           seen.push(attempt);
         },
@@ -62,7 +62,7 @@ describe("withRetry onRetry callback", () => {
         },
         {
           maxRetries: 2,
-          delayMs: 0,
+          delayMs: 1,
           onRetry: () => {
             onRetryCalls++;
           },
@@ -84,7 +84,7 @@ describe("withRetry onRetry callback", () => {
       },
       {
         maxRetries: 3,
-        delayMs: 0,
+        delayMs: 1,
         onRetry: () => {
           throw new Error("instrumentation broken");
         },
@@ -103,7 +103,7 @@ describe("withRetry onRetry callback", () => {
         },
         {
           maxRetries: 5,
-          delayMs: 0,
+          delayMs: 1,
           shouldRetry: () => false,
           onRetry: () => {
             onRetryCalls++;
