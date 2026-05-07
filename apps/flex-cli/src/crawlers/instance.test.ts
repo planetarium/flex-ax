@@ -217,7 +217,9 @@ describe("crawlInstances incremental wiring", () => {
     }
 
     const wm = storage._watermarks.approvalDocuments!;
-    assert.equal(wm.groups["in-progress"].lastUpdatedAt, "2026-04-29T12:00:00Z");
+    // in-progress is incrementalEligible=false: never persisted as a
+    // group watermark, even after a successful sweep. Only done lands.
+    assert.equal(wm.groups["in-progress"], undefined);
     assert.equal(wm.groups["done"].lastUpdatedAt, "2026-04-30T03:00:00Z");
     assert.ok(wm.lastFullReconAt, "bootstrap counts as a full recon");
   });
@@ -254,6 +256,9 @@ describe("crawlInstances incremental wiring", () => {
     const todayAfter = toKstDate(new Date());
     const acceptableTodays = new Set([todayBefore, todayAfter]);
 
+    // in-progress is incrementalEligible=false: must always sweep with
+    // no lastUpdatedDateRange, even when a stale watermark sits in the
+    // file (e.g. left over from a pre-policy run).
     const inProgressCall = calls.find(
       (c) =>
         c.url.includes("/user-boxes/search") &&
@@ -261,12 +266,11 @@ describe("crawlInstances incremental wiring", () => {
         (c.body as { filter: { statuses: string[] } }).filter.statuses[0] === "IN_PROGRESS",
     );
     assert.ok(inProgressCall);
-    const ipRange = (
-      (inProgressCall.body as { filter: { lastUpdatedDateRange: { from: string; to: string } } })
-        .filter.lastUpdatedDateRange
+    const ipFilter = (inProgressCall.body as { filter: Record<string, unknown> }).filter;
+    assert.ok(
+      !("lastUpdatedDateRange" in ipFilter),
+      "in-progress must never carry a date range",
     );
-    assert.equal(ipRange.from, "2026-04-28"); // KST(2026-04-29 21:17 KST) - 1d
-    assert.ok(acceptableTodays.has(ipRange.to), `to=${ipRange.to} must be a today-KST value`);
 
     const doneCall = calls.find(
       (c) =>
@@ -319,15 +323,10 @@ describe("crawlInstances incremental wiring", () => {
     }
   });
 
-  it("does not advance a group's watermark when that group has any failure", async () => {
+  it("does not advance the done watermark when that group has any failure", async () => {
     const initial: WatermarkFile = {
       approvalDocuments: {
         groups: {
-          "in-progress": {
-            lastUpdatedAt: "2026-04-29T00:00:00Z",
-            overlapDays: 1,
-            lastSuccessfulRunAt: "2026-04-29T00:00:00Z",
-          },
           done: {
             lastUpdatedAt: "2026-04-29T00:00:00Z",
             overlapDays: 2,
@@ -337,61 +336,45 @@ describe("crawlInstances incremental wiring", () => {
       },
     };
     const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
       [
-        "IN_PROGRESS",
+        "CANCELED|DECLINED|DONE",
         {
           documents: [
-            { document: { documentKey: "ip-ok" } },
-            { document: { documentKey: "ip-fail" } },
+            { document: { documentKey: "done-ok" } },
+            { document: { documentKey: "done-fail" } },
           ],
           total: 2,
           hasNext: false,
         },
       ],
-      [
-        "CANCELED|DECLINED|DONE",
-        { documents: [{ document: { documentKey: "done-ok" } }], total: 1, hasNext: false },
-      ],
     ]);
     const details = new Map<string, DetailResp>([
-      ["ip-ok", detailFor("ip-ok", "2026-05-03T01:00:00Z", "IN_PROGRESS")],
       ["done-ok", detailFor("done-ok", "2026-05-04T05:00:00Z", "DONE")],
     ]);
-    const { calls: _calls } = setupFetch(search, details, new Set(["ip-fail"]));
+    setupFetch(search, details, new Set(["done-fail"]));
 
     const storage = makeStorage(initial);
     const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
 
     assert.equal(result.failureCount, 1);
-    assert.equal(result.successCount, 2);
-
-    // in-progress had 1 failure → watermark must be unchanged
-    assert.equal(
-      storage._watermarks.approvalDocuments!.groups["in-progress"].lastUpdatedAt,
-      "2026-04-29T00:00:00Z",
-    );
-    // done was clean → watermark advances to the observed max
     assert.equal(
       storage._watermarks.approvalDocuments!.groups["done"].lastUpdatedAt,
-      "2026-05-04T05:00:00Z",
+      "2026-04-29T00:00:00Z",
+      "any failure in the group blocks the watermark advance",
     );
   });
 
   it("treats an invalid watermark.lastUpdatedAt as bootstrap for that group", async () => {
     // Simulates a corrupted/hand-edited watermark file that survived
     // normalization (e.g., string field present but unparseable). The
-    // group must omit lastUpdatedDateRange so the run self-heals into a
-    // full crawl rather than aborting on RangeError.
+    // done group must omit lastUpdatedDateRange so the run self-heals
+    // into a full crawl rather than aborting on RangeError.
     const initial = {
       approvalDocuments: {
         groups: {
-          "in-progress": {
-            lastUpdatedAt: "garbage",
-            overlapDays: 1,
-            lastSuccessfulRunAt: "2026-04-30T00:00:00Z",
-          },
           done: {
-            lastUpdatedAt: "2026-04-25T00:00:00Z",
+            lastUpdatedAt: "garbage",
             overlapDays: 2,
             lastSuccessfulRunAt: "2026-04-30T00:00:00Z",
           },
@@ -400,14 +383,14 @@ describe("crawlInstances incremental wiring", () => {
     } as unknown as WatermarkFile;
 
     const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
       [
-        "IN_PROGRESS",
-        { documents: [{ document: { documentKey: "ip-ok" } }], total: 1, hasNext: false },
+        "CANCELED|DECLINED|DONE",
+        { documents: [{ document: { documentKey: "done-ok" } }], total: 1, hasNext: false },
       ],
-      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
     ]);
     const details = new Map<string, DetailResp>([
-      ["ip-ok", detailFor("ip-ok", "2026-05-05T01:00:00Z", "IN_PROGRESS")],
+      ["done-ok", detailFor("done-ok", "2026-05-05T01:00:00Z", "DONE")],
     ]);
     const { calls } = setupFetch(search, details);
 
@@ -415,13 +398,13 @@ describe("crawlInstances incremental wiring", () => {
     const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
 
     assert.equal(result.failureCount, 0);
-    const inProgressCall = calls.find(
+    const doneCall = calls.find(
       (c) =>
         c.url.includes("/user-boxes/search") &&
-        (c.body as { filter: { statuses: string[] } }).filter.statuses[0] === "IN_PROGRESS",
+        (c.body as { filter: { statuses: string[] } }).filter.statuses.includes("DONE"),
     );
-    assert.ok(inProgressCall);
-    const filter = (inProgressCall.body as { filter: Record<string, unknown> }).filter;
+    assert.ok(doneCall);
+    const filter = (doneCall.body as { filter: Record<string, unknown> }).filter;
     assert.ok(
       !("lastUpdatedDateRange" in filter),
       "invalid watermark must self-heal by omitting the date range",
@@ -429,7 +412,7 @@ describe("crawlInstances incremental wiring", () => {
     // After a clean run, the corrupted watermark is replaced with the
     // observed max — the file repairs itself.
     assert.equal(
-      storage._watermarks.approvalDocuments!.groups["in-progress"].lastUpdatedAt,
+      storage._watermarks.approvalDocuments!.groups["done"].lastUpdatedAt,
       "2026-05-05T01:00:00Z",
     );
   });
@@ -441,51 +424,46 @@ describe("crawlInstances incremental wiring", () => {
     const initial = {
       approvalDocuments: {
         groups: {
-          "in-progress": {
-            lastUpdatedAt: "2099-01-01T00:00:00Z",
-            overlapDays: 1,
-            lastSuccessfulRunAt: "2099-01-01T00:00:00Z",
-          },
           done: {
-            lastUpdatedAt: "2026-04-25T00:00:00Z",
+            lastUpdatedAt: "2099-01-01T00:00:00Z",
             overlapDays: 2,
-            lastSuccessfulRunAt: "2026-04-25T00:00:00Z",
+            lastSuccessfulRunAt: "2099-01-01T00:00:00Z",
           },
         },
       },
     } as WatermarkFile;
 
     const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
       [
-        "IN_PROGRESS",
-        { documents: [{ document: { documentKey: "ip-ok" } }], total: 1, hasNext: false },
+        "CANCELED|DECLINED|DONE",
+        { documents: [{ document: { documentKey: "done-ok" } }], total: 1, hasNext: false },
       ],
-      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
     ]);
     const details = new Map<string, DetailResp>([
-      ["ip-ok", detailFor("ip-ok", "2026-05-05T01:00:00Z", "IN_PROGRESS")],
+      ["done-ok", detailFor("done-ok", "2026-05-05T01:00:00Z", "DONE")],
     ]);
     const { calls } = setupFetch(search, details);
 
     const storage = makeStorage(initial);
     await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
 
-    // in-progress had a bad watermark → group dropped at normalize → no
-    // lastUpdatedDateRange in the in-progress search.
-    const inProgressCall = calls.find(
+    // done had a bad watermark → group dropped at normalize → no
+    // lastUpdatedDateRange in the done search.
+    const doneCall = calls.find(
       (c) =>
         c.url.includes("/user-boxes/search") &&
-        (c.body as { filter: { statuses: string[] } }).filter.statuses[0] === "IN_PROGRESS",
+        (c.body as { filter: { statuses: string[] } }).filter.statuses.includes("DONE"),
     );
-    assert.ok(inProgressCall);
-    const filter = (inProgressCall.body as { filter: Record<string, unknown> }).filter;
+    assert.ok(doneCall);
+    const filter = (doneCall.body as { filter: Record<string, unknown> }).filter;
     assert.ok(
       !("lastUpdatedDateRange" in filter),
       "future watermark must self-heal by omitting the date range",
     );
     // Watermark replaced by the freshly observed value.
     assert.equal(
-      storage._watermarks.approvalDocuments!.groups["in-progress"].lastUpdatedAt,
+      storage._watermarks.approvalDocuments!.groups["done"].lastUpdatedAt,
       "2026-05-05T01:00:00Z",
     );
   });
@@ -517,23 +495,23 @@ describe("crawlInstances incremental wiring", () => {
     const initial: WatermarkFile = {
       approvalDocuments: {
         groups: {
-          "in-progress": {
+          done: {
             lastUpdatedAt: "2026-04-29T12:17:44Z",
-            overlapDays: 1,
+            overlapDays: 2,
             lastSuccessfulRunAt: "2026-04-29T12:17:44Z",
           },
         },
       },
     };
     const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
       [
-        "IN_PROGRESS",
+        "CANCELED|DECLINED|DONE",
         { documents: [{ document: { documentKey: "ms-doc" } }], total: 1, hasNext: false },
       ],
-      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
     ]);
     const details = new Map<string, DetailResp>([
-      ["ms-doc", detailFor("ms-doc", "2026-04-29T12:17:44.500Z", "IN_PROGRESS")],
+      ["ms-doc", detailFor("ms-doc", "2026-04-29T12:17:44.500Z", "DONE")],
     ]);
     setupFetch(search, details);
 
@@ -541,7 +519,7 @@ describe("crawlInstances incremental wiring", () => {
     await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
 
     assert.equal(
-      storage._watermarks.approvalDocuments!.groups["in-progress"].lastUpdatedAt,
+      storage._watermarks.approvalDocuments!.groups["done"].lastUpdatedAt,
       "2026-04-29T12:17:44.500Z",
       "candidate is later in time and must replace the watermark",
     );
@@ -551,9 +529,9 @@ describe("crawlInstances incremental wiring", () => {
     const initial: WatermarkFile = {
       approvalDocuments: {
         groups: {
-          "in-progress": {
+          done: {
             lastUpdatedAt: "2026-04-29T12:00:00Z",
-            overlapDays: 1,
+            overlapDays: 2,
             lastSuccessfulRunAt: "2026-04-30T00:00:00Z",
           },
         },
@@ -569,7 +547,7 @@ describe("crawlInstances incremental wiring", () => {
     const before = Date.now();
     await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
 
-    const wm = storage._watermarks.approvalDocuments!.groups["in-progress"];
+    const wm = storage._watermarks.approvalDocuments!.groups["done"];
     assert.equal(wm.lastUpdatedAt, "2026-04-29T12:00:00Z", "lastUpdatedAt must be preserved");
     assert.ok(wm.lastSuccessfulRunAt, "lastSuccessfulRunAt must be set");
     const stamped = Date.parse(wm.lastSuccessfulRunAt!);
@@ -763,23 +741,23 @@ describe("crawlInstances incremental wiring", () => {
     const initial: WatermarkFile = {
       approvalDocuments: {
         groups: {
-          "in-progress": {
+          done: {
             lastUpdatedAt: "2026-05-01T00:00:00Z",
-            overlapDays: 1,
+            overlapDays: 2,
             lastSuccessfulRunAt: "2026-05-01T00:00:00Z",
           },
         },
       },
     };
     const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
       [
-        "IN_PROGRESS",
+        "CANCELED|DECLINED|DONE",
         { documents: [{ document: { documentKey: "old-doc" } }], total: 1, hasNext: false },
       ],
-      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
     ]);
     const details = new Map<string, DetailResp>([
-      ["old-doc", detailFor("old-doc", "2026-04-01T00:00:00Z", "IN_PROGRESS")],
+      ["old-doc", detailFor("old-doc", "2026-04-01T00:00:00Z", "DONE")],
     ]);
     setupFetch(search, details);
 
@@ -787,8 +765,62 @@ describe("crawlInstances incremental wiring", () => {
     await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
 
     assert.equal(
-      storage._watermarks.approvalDocuments!.groups["in-progress"].lastUpdatedAt,
+      storage._watermarks.approvalDocuments!.groups["done"].lastUpdatedAt,
       "2026-05-01T00:00:00Z",
+    );
+  });
+
+  it("always sweeps in-progress without a date range and never persists a watermark for it", async () => {
+    // Even with a stale watermark file claiming an in-progress group
+    // entry (e.g. left over from before this policy or hand-edited),
+    // the search payload must omit lastUpdatedDateRange and the entry
+    // must not survive a clean run.
+    const initial: WatermarkFile = {
+      approvalDocuments: {
+        groups: {
+          "in-progress": {
+            lastUpdatedAt: "2026-04-29T00:00:00Z",
+            overlapDays: 1,
+            lastSuccessfulRunAt: "2026-04-29T00:00:00Z",
+          },
+        },
+      },
+    };
+    const search = new Map<string, SearchResp>([
+      [
+        "IN_PROGRESS",
+        { documents: [{ document: { documentKey: "ip-1" } }], total: 1, hasNext: false },
+      ],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    const details = new Map<string, DetailResp>([
+      ["ip-1", detailFor("ip-1", "2026-05-05T01:00:00Z", "IN_PROGRESS")],
+    ]);
+    const { calls } = setupFetch(search, details);
+
+    const storage = makeStorage(initial);
+    await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    const inProgressCall = calls.find(
+      (c) =>
+        c.url.includes("/user-boxes/search") &&
+        (c.body as { filter: { statuses: string[] } }).filter.statuses[0] === "IN_PROGRESS",
+    );
+    assert.ok(inProgressCall);
+    const filter = (inProgressCall.body as { filter: Record<string, unknown> }).filter;
+    assert.ok(
+      !("lastUpdatedDateRange" in filter),
+      "in-progress must always sweep without a date range",
+    );
+    // The stale entry from `initial` is left in place by the file's
+    // shape (we don't actively delete it), but a successful sweep must
+    // not advance lastSuccessfulRunAt for it — that's the only externally
+    // visible signal that the policy is in effect.
+    const wmIp = storage._watermarks.approvalDocuments?.groups["in-progress"];
+    assert.equal(
+      wmIp?.lastSuccessfulRunAt,
+      "2026-04-29T00:00:00Z",
+      "in-progress watermark must not be touched by the sweep",
     );
   });
 });

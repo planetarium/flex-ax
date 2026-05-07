@@ -60,18 +60,35 @@ export async function crawlInstances(
     "/api/v3/approval-document/approval-documents",
   );
 
+  // 결재 문서 댓글 mutation은 `document.updatedAt`을 갱신하지 않는다
+  // (planetarium/reflex#38 검증). 그래서 워터마크 검색만으로는 IN_PROGRESS
+  // 동안의 댓글 변화를 잡을 수 없다. IN_PROGRESS는 모집단이 작고 어차피 곧
+  // 상태 전이될 가능성이 높아 매 실행 전수 sweep이 안전하고 저렴하다.
+  // → incrementalEligible=false: dateRange 안 박고 그룹 워터마크도 안 만듦.
   const searchGroups: SearchGroup[] = [
-    { label: "in-progress", statuses: ["IN_PROGRESS"], defaultOverlapDays: 1 },
-    { label: "done", statuses: ["DONE", "DECLINED", "CANCELED"], defaultOverlapDays: 2 },
+    {
+      label: "in-progress",
+      statuses: ["IN_PROGRESS"],
+      defaultOverlapDays: 1,
+      incrementalEligible: false,
+    },
+    {
+      label: "done",
+      statuses: ["DONE", "DECLINED", "CANCELED"],
+      defaultOverlapDays: 2,
+      incrementalEligible: true,
+    },
   ];
 
   const watermarks = await storage.loadWatermarks();
   const domainState: WatermarkDomainState =
     watermarks[APPROVAL_DOCUMENTS_DOMAIN] ?? { groups: {} };
-  // 모든 그룹에 워터마크가 모두 비어 있다면 부트스트랩 — 사실상 풀크롤로 동작.
-  const noWatermarks = searchGroups.every(
-    (g) => !domainState.groups[g.label]?.lastUpdatedAt,
-  );
+  // incremental-eligible 그룹들에 워터마크가 모두 비어 있다면 부트스트랩 —
+  // 사실상 풀크롤. 비-eligible 그룹(IN_PROGRESS sweep)은 어차피 매 실행
+  // 전수 fetch라 effectiveFull 판정에서 제외한다.
+  const noWatermarks = searchGroups
+    .filter((g) => g.incrementalEligible)
+    .every((g) => !domainState.groups[g.label]?.lastUpdatedAt);
   const effectiveFull = mode === "full" || noWatermarks;
   if (mode === "incremental" && noWatermarks) {
     logger.info("워터마크 없음 — bootstrap 풀크롤로 진행");
@@ -111,9 +128,11 @@ export async function crawlInstances(
   try {
     for (const group of searchGroups) {
       const existing = domainState.groups[group.label];
-      const dateRange = effectiveFull
-        ? undefined
-        : computeDateRange(existing, group.defaultOverlapDays, todayKst);
+      // incrementalEligible=false 그룹은 워터마크/풀모드 무관 항상 전수 sweep.
+      const dateRange =
+        !group.incrementalEligible || effectiveFull
+          ? undefined
+          : computeDateRange(existing, group.defaultOverlapDays, todayKst);
 
       const groupSuccessBefore = result.successCount;
       const groupFailureBefore = result.failureCount;
@@ -135,10 +154,14 @@ export async function crawlInstances(
       const groupFailure = result.failureCount - groupFailureBefore;
 
       // 그룹 단위로 워터마크 갱신 정책:
+      //   - incrementalEligible=false 그룹은 워터마크 자체를 만들지/갱신하지 않음.
+      //     IN_PROGRESS sweep은 댓글 변화 흡수가 목적이라 워터마크가 무의미하고,
+      //     watermark.json에 entry를 남기면 다음 실행의 effectiveFull 판정도
+      //     흐려진다.
       //   - 그룹 내 실패가 단 1건이라도 있으면 갱신 보류 (다음 실행에서 재시도)
       //   - 후퇴 금지 — 새 max가 기존보다 작으면 기존 lastUpdatedAt 유지
       //   - 0건 처리됐어도 그룹 자체가 클린하게 끝났으면 lastSuccessfulRunAt은 갱신
-      if (groupFailure === 0) {
+      if (group.incrementalEligible && groupFailure === 0) {
         const prev = existing?.lastUpdatedAt ?? null;
         if (observedMaxUpdatedAt && isLaterIso(observedMaxUpdatedAt, prev)) {
           domainState.groups[group.label] = {
@@ -232,6 +255,14 @@ interface SearchGroup {
   label: string;
   statuses: string[];
   defaultOverlapDays: number;
+  /**
+   * true: 워터마크 기반 증분 검색(`lastUpdatedDateRange`) + 그룹별 워터마크
+   * 갱신을 적용한다.
+   * false: 매 실행 전수 sweep. 워터마크를 사용하지도, 만들지도 않는다.
+   * (예: IN_PROGRESS — 댓글 mutation이 `document.updatedAt`을 안 건드려서
+   * 워터마크 검색만으로는 댓글 변화를 흡수 못 함)
+   */
+  incrementalEligible: boolean;
 }
 
 function computeDateRange(
