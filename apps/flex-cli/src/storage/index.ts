@@ -72,6 +72,11 @@ export interface StorageWriter {
    * 디렉토리가 없으면 빈 set. full reconciliation diff 계산에 쓰인다.
    */
   listExistingInstanceKeys(): Promise<Set<string>>;
+  /**
+   * 저장된 단일 인스턴스 JSON을 읽는다. 없거나 파싱 실패면 null.
+   * closed-window sweep이 status / lastUpdatedAt 메타만 보기 위해 사용한다.
+   */
+  readInstance(id: string): Promise<WorkflowInstance | null>;
 }
 
 async function ensureDir(dir: string): Promise<void> {
@@ -231,6 +236,48 @@ export function createStorageWriter(outputDir: string, catalogPath: string): Sto
 
     async saveWatermarks(file) {
       await writeJson(path.join(outputDir, "watermark.json"), file);
+    },
+
+    async readInstance(id) {
+      const safeId = path.basename(id);
+      const filePath = path.join(outputDir, "instances", `${safeId}.json`);
+      let content: string;
+      try {
+        content = await readFile(filePath, "utf-8");
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw err;
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(content);
+      } catch {
+        return null;
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      const obj = parsed as Record<string, unknown>;
+      // 필수 필드 검증 — 누락/타입 불일치면 type-cast로 거짓말하지 말고 null
+      // 반환. 호출자(closed-window sweep 등)는 이미 null을 정상 처리한다.
+      if (typeof obj.id !== "string" || obj.id.length === 0) return null;
+      if (typeof obj.status !== "string") return null;
+      // 정규화 — instance JSON이 디스크에 쓰일 당시 schema에 없던 필드는
+      // undefined로 들어오는데, 캐스트만 하면 type system은 이를 모르고
+      // downstream의 null 비교가 어긋난다. 누락 필드를 명시적인 기본값으로
+      // 채워 옛 파일도 새 shape에 맞게 읽히도록 한다.
+      if (obj.signatureHash === undefined) obj.signatureHash = null;
+      if (obj.lastUpdatedAt === undefined) {
+        // PR #51 이전 인스턴스 JSON엔 top-level lastUpdatedAt이 없지만
+        // `_raw.document.updatedAt`은 보존되어 있다. 이걸 채우지 않으면
+        // closed-window sweep이 옛 데이터에 한해선 영영 후보를 못 만든다.
+        // import.ts도 같은 폴백 패턴(data.lastUpdatedAt ?? doc.updatedAt)을 쓴다.
+        const raw = obj._raw as { document?: { updatedAt?: unknown } } | undefined;
+        const rawUpdatedAt = raw?.document?.updatedAt;
+        obj.lastUpdatedAt = typeof rawUpdatedAt === "string" ? rawUpdatedAt : null;
+      }
+      if (!Array.isArray(obj.attachments)) obj.attachments = [];
+      if (!Array.isArray(obj.fields)) obj.fields = [];
+      if (!Array.isArray(obj.approvalLine)) obj.approvalLine = [];
+      return obj as unknown as WorkflowInstance;
     },
 
     async listExistingInstanceKeys() {

@@ -3,13 +3,18 @@ import assert from "node:assert/strict";
 import type { AuthContext } from "../auth/index.js";
 import type { Config } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
+import type { WorkflowInstance } from "../types/instance.js";
 import {
   normalizeWatermarkFile,
   type CrawlReport,
   type StorageWriter,
   type WatermarkFile,
 } from "../storage/index.js";
-import { crawlInstances } from "./instance.js";
+import {
+  computeSignatureHash,
+  crawlInstances,
+  type DocumentDetailResponse,
+} from "./instance.js";
 import { toKstDate } from "./shared.js";
 
 interface CapturedFetch {
@@ -47,6 +52,7 @@ function makeConfig(): Config {
     skipEndpoints: [],
     customers: [],
     flexCrawlMode: "incremental",
+    closedSweepDays: 0, // tests opt in per-case
   };
 }
 
@@ -60,17 +66,19 @@ function makeLogger(): Logger {
 }
 
 interface FakeStorage extends StorageWriter {
-  _instances: unknown[];
+  _instances: WorkflowInstance[];
   _watermarks: WatermarkFile;
   _existingInstanceKeys: Set<string>;
+  _closedDocs: Map<string, WorkflowInstance>;
 }
 
 function makeStorage(
   initial: WatermarkFile = {},
   existingInstanceKeys: Set<string> = new Set(),
+  closedDocs: Map<string, WorkflowInstance> = new Map(),
 ): FakeStorage {
   let watermarks: WatermarkFile = structuredClone(initial);
-  const instances: unknown[] = [];
+  const instances: WorkflowInstance[] = [];
   const writer: FakeStorage = {
     saveTemplate: async () => {},
     saveInstance: async (i) => {
@@ -90,8 +98,10 @@ function makeStorage(
       watermarks = structuredClone(file);
     },
     listExistingInstanceKeys: async () => new Set(existingInstanceKeys),
+    readInstance: async (id) => closedDocs.get(id) ?? null,
     _instances: instances,
     _existingInstanceKeys: existingInstanceKeys,
+    _closedDocs: closedDocs,
     get _watermarks() {
       return watermarks;
     },
@@ -217,7 +227,9 @@ describe("crawlInstances incremental wiring", () => {
     }
 
     const wm = storage._watermarks.approvalDocuments!;
-    assert.equal(wm.groups["in-progress"].lastUpdatedAt, "2026-04-29T12:00:00Z");
+    // in-progress is incrementalEligible=false: never persisted as a
+    // group watermark, even after a successful sweep. Only done lands.
+    assert.equal(wm.groups["in-progress"], undefined);
     assert.equal(wm.groups["done"].lastUpdatedAt, "2026-04-30T03:00:00Z");
     assert.ok(wm.lastFullReconAt, "bootstrap counts as a full recon");
   });
@@ -254,6 +266,9 @@ describe("crawlInstances incremental wiring", () => {
     const todayAfter = toKstDate(new Date());
     const acceptableTodays = new Set([todayBefore, todayAfter]);
 
+    // in-progress is incrementalEligible=false: must always sweep with
+    // no lastUpdatedDateRange, even when a stale watermark sits in the
+    // file (e.g. left over from a pre-policy run).
     const inProgressCall = calls.find(
       (c) =>
         c.url.includes("/user-boxes/search") &&
@@ -261,12 +276,11 @@ describe("crawlInstances incremental wiring", () => {
         (c.body as { filter: { statuses: string[] } }).filter.statuses[0] === "IN_PROGRESS",
     );
     assert.ok(inProgressCall);
-    const ipRange = (
-      (inProgressCall.body as { filter: { lastUpdatedDateRange: { from: string; to: string } } })
-        .filter.lastUpdatedDateRange
+    const ipFilter = (inProgressCall.body as { filter: Record<string, unknown> }).filter;
+    assert.ok(
+      !("lastUpdatedDateRange" in ipFilter),
+      "in-progress must never carry a date range",
     );
-    assert.equal(ipRange.from, "2026-04-28"); // KST(2026-04-29 21:17 KST) - 1d
-    assert.ok(acceptableTodays.has(ipRange.to), `to=${ipRange.to} must be a today-KST value`);
 
     const doneCall = calls.find(
       (c) =>
@@ -319,15 +333,10 @@ describe("crawlInstances incremental wiring", () => {
     }
   });
 
-  it("does not advance a group's watermark when that group has any failure", async () => {
+  it("does not advance the done watermark when that group has any failure", async () => {
     const initial: WatermarkFile = {
       approvalDocuments: {
         groups: {
-          "in-progress": {
-            lastUpdatedAt: "2026-04-29T00:00:00Z",
-            overlapDays: 1,
-            lastSuccessfulRunAt: "2026-04-29T00:00:00Z",
-          },
           done: {
             lastUpdatedAt: "2026-04-29T00:00:00Z",
             overlapDays: 2,
@@ -337,61 +346,45 @@ describe("crawlInstances incremental wiring", () => {
       },
     };
     const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
       [
-        "IN_PROGRESS",
+        "CANCELED|DECLINED|DONE",
         {
           documents: [
-            { document: { documentKey: "ip-ok" } },
-            { document: { documentKey: "ip-fail" } },
+            { document: { documentKey: "done-ok" } },
+            { document: { documentKey: "done-fail" } },
           ],
           total: 2,
           hasNext: false,
         },
       ],
-      [
-        "CANCELED|DECLINED|DONE",
-        { documents: [{ document: { documentKey: "done-ok" } }], total: 1, hasNext: false },
-      ],
     ]);
     const details = new Map<string, DetailResp>([
-      ["ip-ok", detailFor("ip-ok", "2026-05-03T01:00:00Z", "IN_PROGRESS")],
       ["done-ok", detailFor("done-ok", "2026-05-04T05:00:00Z", "DONE")],
     ]);
-    const { calls: _calls } = setupFetch(search, details, new Set(["ip-fail"]));
+    setupFetch(search, details, new Set(["done-fail"]));
 
     const storage = makeStorage(initial);
     const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
 
     assert.equal(result.failureCount, 1);
-    assert.equal(result.successCount, 2);
-
-    // in-progress had 1 failure → watermark must be unchanged
-    assert.equal(
-      storage._watermarks.approvalDocuments!.groups["in-progress"].lastUpdatedAt,
-      "2026-04-29T00:00:00Z",
-    );
-    // done was clean → watermark advances to the observed max
     assert.equal(
       storage._watermarks.approvalDocuments!.groups["done"].lastUpdatedAt,
-      "2026-05-04T05:00:00Z",
+      "2026-04-29T00:00:00Z",
+      "any failure in the group blocks the watermark advance",
     );
   });
 
   it("treats an invalid watermark.lastUpdatedAt as bootstrap for that group", async () => {
     // Simulates a corrupted/hand-edited watermark file that survived
     // normalization (e.g., string field present but unparseable). The
-    // group must omit lastUpdatedDateRange so the run self-heals into a
-    // full crawl rather than aborting on RangeError.
+    // done group must omit lastUpdatedDateRange so the run self-heals
+    // into a full crawl rather than aborting on RangeError.
     const initial = {
       approvalDocuments: {
         groups: {
-          "in-progress": {
-            lastUpdatedAt: "garbage",
-            overlapDays: 1,
-            lastSuccessfulRunAt: "2026-04-30T00:00:00Z",
-          },
           done: {
-            lastUpdatedAt: "2026-04-25T00:00:00Z",
+            lastUpdatedAt: "garbage",
             overlapDays: 2,
             lastSuccessfulRunAt: "2026-04-30T00:00:00Z",
           },
@@ -400,14 +393,14 @@ describe("crawlInstances incremental wiring", () => {
     } as unknown as WatermarkFile;
 
     const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
       [
-        "IN_PROGRESS",
-        { documents: [{ document: { documentKey: "ip-ok" } }], total: 1, hasNext: false },
+        "CANCELED|DECLINED|DONE",
+        { documents: [{ document: { documentKey: "done-ok" } }], total: 1, hasNext: false },
       ],
-      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
     ]);
     const details = new Map<string, DetailResp>([
-      ["ip-ok", detailFor("ip-ok", "2026-05-05T01:00:00Z", "IN_PROGRESS")],
+      ["done-ok", detailFor("done-ok", "2026-05-05T01:00:00Z", "DONE")],
     ]);
     const { calls } = setupFetch(search, details);
 
@@ -415,13 +408,13 @@ describe("crawlInstances incremental wiring", () => {
     const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
 
     assert.equal(result.failureCount, 0);
-    const inProgressCall = calls.find(
+    const doneCall = calls.find(
       (c) =>
         c.url.includes("/user-boxes/search") &&
-        (c.body as { filter: { statuses: string[] } }).filter.statuses[0] === "IN_PROGRESS",
+        (c.body as { filter: { statuses: string[] } }).filter.statuses.includes("DONE"),
     );
-    assert.ok(inProgressCall);
-    const filter = (inProgressCall.body as { filter: Record<string, unknown> }).filter;
+    assert.ok(doneCall);
+    const filter = (doneCall.body as { filter: Record<string, unknown> }).filter;
     assert.ok(
       !("lastUpdatedDateRange" in filter),
       "invalid watermark must self-heal by omitting the date range",
@@ -429,7 +422,7 @@ describe("crawlInstances incremental wiring", () => {
     // After a clean run, the corrupted watermark is replaced with the
     // observed max — the file repairs itself.
     assert.equal(
-      storage._watermarks.approvalDocuments!.groups["in-progress"].lastUpdatedAt,
+      storage._watermarks.approvalDocuments!.groups["done"].lastUpdatedAt,
       "2026-05-05T01:00:00Z",
     );
   });
@@ -441,51 +434,46 @@ describe("crawlInstances incremental wiring", () => {
     const initial = {
       approvalDocuments: {
         groups: {
-          "in-progress": {
-            lastUpdatedAt: "2099-01-01T00:00:00Z",
-            overlapDays: 1,
-            lastSuccessfulRunAt: "2099-01-01T00:00:00Z",
-          },
           done: {
-            lastUpdatedAt: "2026-04-25T00:00:00Z",
+            lastUpdatedAt: "2099-01-01T00:00:00Z",
             overlapDays: 2,
-            lastSuccessfulRunAt: "2026-04-25T00:00:00Z",
+            lastSuccessfulRunAt: "2099-01-01T00:00:00Z",
           },
         },
       },
     } as WatermarkFile;
 
     const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
       [
-        "IN_PROGRESS",
-        { documents: [{ document: { documentKey: "ip-ok" } }], total: 1, hasNext: false },
+        "CANCELED|DECLINED|DONE",
+        { documents: [{ document: { documentKey: "done-ok" } }], total: 1, hasNext: false },
       ],
-      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
     ]);
     const details = new Map<string, DetailResp>([
-      ["ip-ok", detailFor("ip-ok", "2026-05-05T01:00:00Z", "IN_PROGRESS")],
+      ["done-ok", detailFor("done-ok", "2026-05-05T01:00:00Z", "DONE")],
     ]);
     const { calls } = setupFetch(search, details);
 
     const storage = makeStorage(initial);
     await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
 
-    // in-progress had a bad watermark → group dropped at normalize → no
-    // lastUpdatedDateRange in the in-progress search.
-    const inProgressCall = calls.find(
+    // done had a bad watermark → group dropped at normalize → no
+    // lastUpdatedDateRange in the done search.
+    const doneCall = calls.find(
       (c) =>
         c.url.includes("/user-boxes/search") &&
-        (c.body as { filter: { statuses: string[] } }).filter.statuses[0] === "IN_PROGRESS",
+        (c.body as { filter: { statuses: string[] } }).filter.statuses.includes("DONE"),
     );
-    assert.ok(inProgressCall);
-    const filter = (inProgressCall.body as { filter: Record<string, unknown> }).filter;
+    assert.ok(doneCall);
+    const filter = (doneCall.body as { filter: Record<string, unknown> }).filter;
     assert.ok(
       !("lastUpdatedDateRange" in filter),
       "future watermark must self-heal by omitting the date range",
     );
     // Watermark replaced by the freshly observed value.
     assert.equal(
-      storage._watermarks.approvalDocuments!.groups["in-progress"].lastUpdatedAt,
+      storage._watermarks.approvalDocuments!.groups["done"].lastUpdatedAt,
       "2026-05-05T01:00:00Z",
     );
   });
@@ -517,23 +505,23 @@ describe("crawlInstances incremental wiring", () => {
     const initial: WatermarkFile = {
       approvalDocuments: {
         groups: {
-          "in-progress": {
+          done: {
             lastUpdatedAt: "2026-04-29T12:17:44Z",
-            overlapDays: 1,
+            overlapDays: 2,
             lastSuccessfulRunAt: "2026-04-29T12:17:44Z",
           },
         },
       },
     };
     const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
       [
-        "IN_PROGRESS",
+        "CANCELED|DECLINED|DONE",
         { documents: [{ document: { documentKey: "ms-doc" } }], total: 1, hasNext: false },
       ],
-      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
     ]);
     const details = new Map<string, DetailResp>([
-      ["ms-doc", detailFor("ms-doc", "2026-04-29T12:17:44.500Z", "IN_PROGRESS")],
+      ["ms-doc", detailFor("ms-doc", "2026-04-29T12:17:44.500Z", "DONE")],
     ]);
     setupFetch(search, details);
 
@@ -541,7 +529,7 @@ describe("crawlInstances incremental wiring", () => {
     await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
 
     assert.equal(
-      storage._watermarks.approvalDocuments!.groups["in-progress"].lastUpdatedAt,
+      storage._watermarks.approvalDocuments!.groups["done"].lastUpdatedAt,
       "2026-04-29T12:17:44.500Z",
       "candidate is later in time and must replace the watermark",
     );
@@ -551,9 +539,9 @@ describe("crawlInstances incremental wiring", () => {
     const initial: WatermarkFile = {
       approvalDocuments: {
         groups: {
-          "in-progress": {
+          done: {
             lastUpdatedAt: "2026-04-29T12:00:00Z",
-            overlapDays: 1,
+            overlapDays: 2,
             lastSuccessfulRunAt: "2026-04-30T00:00:00Z",
           },
         },
@@ -569,7 +557,7 @@ describe("crawlInstances incremental wiring", () => {
     const before = Date.now();
     await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
 
-    const wm = storage._watermarks.approvalDocuments!.groups["in-progress"];
+    const wm = storage._watermarks.approvalDocuments!.groups["done"];
     assert.equal(wm.lastUpdatedAt, "2026-04-29T12:00:00Z", "lastUpdatedAt must be preserved");
     assert.ok(wm.lastSuccessfulRunAt, "lastSuccessfulRunAt must be set");
     const stamped = Date.parse(wm.lastSuccessfulRunAt!);
@@ -763,23 +751,23 @@ describe("crawlInstances incremental wiring", () => {
     const initial: WatermarkFile = {
       approvalDocuments: {
         groups: {
-          "in-progress": {
+          done: {
             lastUpdatedAt: "2026-05-01T00:00:00Z",
-            overlapDays: 1,
+            overlapDays: 2,
             lastSuccessfulRunAt: "2026-05-01T00:00:00Z",
           },
         },
       },
     };
     const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
       [
-        "IN_PROGRESS",
+        "CANCELED|DECLINED|DONE",
         { documents: [{ document: { documentKey: "old-doc" } }], total: 1, hasNext: false },
       ],
-      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
     ]);
     const details = new Map<string, DetailResp>([
-      ["old-doc", detailFor("old-doc", "2026-04-01T00:00:00Z", "IN_PROGRESS")],
+      ["old-doc", detailFor("old-doc", "2026-04-01T00:00:00Z", "DONE")],
     ]);
     setupFetch(search, details);
 
@@ -787,8 +775,571 @@ describe("crawlInstances incremental wiring", () => {
     await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
 
     assert.equal(
-      storage._watermarks.approvalDocuments!.groups["in-progress"].lastUpdatedAt,
+      storage._watermarks.approvalDocuments!.groups["done"].lastUpdatedAt,
       "2026-05-01T00:00:00Z",
+    );
+  });
+
+  it("re-fetches recently-closed docs (closed-window sweep) and skips ones already collected", async () => {
+    // Disk has three closed docs:
+    //   - d-fresh-1: closed within window, not seen by main search → MUST sweep
+    //   - d-fresh-2: closed within window, ALREADY collected by main search → MUST skip (no double fetch)
+    //   - d-stale: closed outside window → MUST skip
+    // and one in-progress (must be ignored — it's the IN_PROGRESS sweep's job).
+    const now = Date.now();
+    const within = new Date(now - 10 * 24 * 60 * 60 * 1000).toISOString(); // 10d ago
+    const outside = new Date(now - 100 * 24 * 60 * 60 * 1000).toISOString(); // 100d ago
+
+    function closedInstance(id: string, updatedAt: string, status = "DONE"): WorkflowInstance {
+      return {
+        id,
+        documentNumber: id,
+        templateId: "tmpl",
+        templateName: "tmpl",
+        drafter: { id: "u", name: "n" },
+        draftedAt: updatedAt,
+        lastUpdatedAt: updatedAt,
+        signatureHash: "test-fixture-hash",
+        status,
+        approvalLine: [],
+        fields: [],
+        attachments: [],
+      };
+    }
+
+    const closedDocs = new Map<string, WorkflowInstance>([
+      ["d-fresh-1", closedInstance("d-fresh-1", within, "DONE")],
+      ["d-fresh-2", closedInstance("d-fresh-2", within, "DECLINED")],
+      ["d-stale", closedInstance("d-stale", outside, "DONE")],
+      ["d-in-progress", closedInstance("d-in-progress", within, "IN_PROGRESS")],
+    ]);
+    const existingKeys = new Set(closedDocs.keys());
+
+    // Main search returns d-fresh-2 in the done group (it just got an
+    // updatedAt bump from a status comment cycle, hypothetically).
+    const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
+      [
+        "CANCELED|DECLINED|DONE",
+        { documents: [{ document: { documentKey: "d-fresh-2" } }], total: 1, hasNext: false },
+      ],
+    ]);
+    const details = new Map<string, DetailResp>([
+      ["d-fresh-1", detailFor("d-fresh-1", within, "DONE")],
+      ["d-fresh-2", detailFor("d-fresh-2", within, "DECLINED")],
+    ]);
+    setupFetch(search, details);
+
+    const config: Config = { ...makeConfig(), closedSweepDays: 30 };
+    const storage = makeStorage({}, existingKeys, closedDocs);
+    const result = await crawlInstances(makeAuth(), config, null, storage, makeLogger());
+
+    assert.equal(result.closedSweepCount, 1, "only d-fresh-1 should be swept");
+    // success + failure must not exceed totalCount; the sweep counts
+    // attempted candidates into total just like main search counts new
+    // search hits, so the unified counter stays consistent.
+    assert.ok(
+      result.successCount + result.failureCount <= result.totalCount,
+      `counters inconsistent: success=${result.successCount} failure=${result.failureCount} total=${result.totalCount}`,
+    );
+    // d-fresh-2 was collected by main search; sweep must not double-fetch
+    assert.equal(
+      storage._instances.filter((i) => i.id === "d-fresh-2").length,
+      1,
+      "d-fresh-2 must be saved exactly once",
+    );
+    // d-fresh-1 came in via sweep
+    assert.ok(
+      storage._instances.some((i) => i.id === "d-fresh-1"),
+      "d-fresh-1 must be in storage after sweep",
+    );
+    // d-stale and d-in-progress must NOT be touched
+    assert.ok(!storage._instances.some((i) => i.id === "d-stale"));
+    assert.ok(!storage._instances.some((i) => i.id === "d-in-progress"));
+  });
+
+  it("preserves prior attachment metadata (localPath etc.) when sweeping", async () => {
+    // The sweep refetches detail to pick up late comments, but
+    // attachments themselves rarely change at that point. mapInstance
+    // can only reconstruct fileName from the detail response, so any
+    // prior localPath / fileSize / mimeType must be merged back in by
+    // fileName so the importer keeps writing real local_path values.
+    const within = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    const prior: WorkflowInstance = {
+      id: "d-fresh",
+      documentNumber: "d-fresh",
+      templateId: "t",
+      templateName: "t",
+      drafter: { id: "u", name: "n" },
+      draftedAt: within,
+      lastUpdatedAt: within,
+      signatureHash: "old-hash",
+      status: "DONE",
+      approvalLine: [],
+      fields: [],
+      attachments: [
+        {
+          fileName: "report.pdf",
+          localPath: "/cache/d-fresh/report.pdf",
+          fileSize: 12345,
+          mimeType: "application/pdf",
+        },
+      ],
+    };
+    const closedDocs = new Map<string, WorkflowInstance>([["d-fresh", prior]]);
+    const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    const detailWithSameAttachment: DetailResp = {
+      ...detailFor("d-fresh", within, "DONE"),
+    };
+    detailWithSameAttachment.document = {
+      ...detailWithSameAttachment.document,
+    };
+    // Inject the same fileName on the detail's attachments so the merge
+    // path actually fires. (detailFor doesn't include attachments by default.)
+    (detailWithSameAttachment.document as unknown as { attachments: Array<{ idHash: string; file: { fileKey: string; fileName: string; downloadUrl: string } }> }).attachments = [
+      {
+        idHash: "att-1",
+        file: {
+          fileKey: "fk-1",
+          fileName: "report.pdf",
+          downloadUrl: "https://example.invalid/x",
+        },
+      },
+    ];
+    const details = new Map<string, DetailResp>([["d-fresh", detailWithSameAttachment]]);
+    setupFetch(search, details);
+
+    const config: Config = { ...makeConfig(), closedSweepDays: 30 };
+    const storage = makeStorage({}, new Set(["d-fresh"]), closedDocs);
+    await crawlInstances(makeAuth(), config, null, storage, makeLogger());
+
+    const saved = storage._instances.find((i) => i.id === "d-fresh");
+    assert.ok(saved, "d-fresh must be saved by the sweep");
+    const att = saved.attachments[0];
+    assert.equal(att.fileName, "report.pdf");
+    assert.equal(att.localPath, "/cache/d-fresh/report.pdf", "localPath must be carried over from prior");
+    assert.equal(att.fileSize, 12345, "fileSize must be carried over from prior");
+    assert.equal(att.mimeType, "application/pdf", "mimeType must be carried over from prior");
+  });
+
+  it("matches attachments by fileKey when prior _raw is available, not just fileName", async () => {
+    // Two attachments share the same fileName but have different
+    // fileKeys (a real-world case the codebase already handles via
+    // fileKey prefixing on disk). fileName-only merge would mis-pair
+    // their localPath metadata; fileKey merge keeps each attachment's
+    // metadata aligned to its own file.
+    const within = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    const prior: WorkflowInstance = {
+      id: "d-dup",
+      documentNumber: "d-dup",
+      templateId: "t",
+      templateName: "t",
+      drafter: { id: "u", name: "n" },
+      draftedAt: within,
+      lastUpdatedAt: within,
+      signatureHash: "old-hash",
+      status: "DONE",
+      approvalLine: [],
+      fields: [],
+      attachments: [
+        {
+          fileName: "report.pdf",
+          localPath: "/cache/d-dup/fk-A_report.pdf",
+          fileSize: 100,
+          mimeType: "application/pdf",
+        },
+        {
+          fileName: "report.pdf",
+          localPath: "/cache/d-dup/fk-B_report.pdf",
+          fileSize: 200,
+          mimeType: "application/pdf",
+        },
+      ],
+      _raw: {
+        document: {
+          attachments: [
+            { idHash: "att-A", file: { fileKey: "fk-A", fileName: "report.pdf", downloadUrl: "" } },
+            { idHash: "att-B", file: { fileKey: "fk-B", fileName: "report.pdf", downloadUrl: "" } },
+          ],
+        },
+      },
+    };
+    const closedDocs = new Map<string, WorkflowInstance>([["d-dup", prior]]);
+    const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    // Detail returns the same two attachments but in swapped order; if
+    // the merge were positional we'd silently mis-pair them. fileKey
+    // merge keeps each metadata bound to its own file.
+    const detailSwapped: DetailResp = { ...detailFor("d-dup", within, "DONE") };
+    detailSwapped.document = { ...detailSwapped.document };
+    (detailSwapped.document as unknown as {
+      attachments: Array<{ idHash: string; file: { fileKey: string; fileName: string; downloadUrl: string } }>;
+    }).attachments = [
+      { idHash: "att-B", file: { fileKey: "fk-B", fileName: "report.pdf", downloadUrl: "" } },
+      { idHash: "att-A", file: { fileKey: "fk-A", fileName: "report.pdf", downloadUrl: "" } },
+    ];
+    setupFetch(search, new Map([["d-dup", detailSwapped]]));
+
+    const config: Config = { ...makeConfig(), closedSweepDays: 30 };
+    const storage = makeStorage({}, new Set(["d-dup"]), closedDocs);
+    await crawlInstances(makeAuth(), config, null, storage, makeLogger());
+
+    const saved = storage._instances.find((i) => i.id === "d-dup");
+    assert.ok(saved);
+    // First attachment in the saved instance corresponds to fk-B (the
+    // first entry of the swapped detail response), so its fileSize
+    // must be 200 — fileName-only merge would have given 100.
+    assert.equal(saved.attachments[0].fileSize, 200, "fk-B metadata must follow fk-B");
+    assert.equal(saved.attachments[1].fileSize, 100, "fk-A metadata must follow fk-A");
+  });
+
+  it("disables closed-window sweep when closedSweepDays=0", async () => {
+    const within = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    const closedDocs = new Map<string, WorkflowInstance>([
+      [
+        "d-fresh",
+        {
+          id: "d-fresh",
+          documentNumber: "d-fresh",
+          templateId: "tmpl",
+          templateName: "tmpl",
+          drafter: { id: "u", name: "n" },
+          draftedAt: within,
+          lastUpdatedAt: within,
+          signatureHash: "test-fixture-hash",
+          status: "DONE",
+          approvalLine: [],
+          fields: [],
+          attachments: [],
+        },
+      ],
+    ]);
+    const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    setupFetch(search, new Map());
+
+    const config: Config = { ...makeConfig(), closedSweepDays: 0 };
+    const storage = makeStorage({}, new Set(["d-fresh"]), closedDocs);
+    const result = await crawlInstances(makeAuth(), config, null, storage, makeLogger());
+
+    assert.equal(result.closedSweepCount, 0);
+    assert.equal(storage._instances.length, 0);
+  });
+
+  it("surfaces a structured error when readInstance throws during sweep, but keeps sweeping the rest", async () => {
+    // Sibling docs: d-fresh-1 reads cleanly, d-fresh-2's metadata read
+    // throws (e.g. EACCES). The sweep must record the failure on errors,
+    // not silently skip it, and still proceed to fetch d-fresh-1.
+    const within = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    function inst(id: string): WorkflowInstance {
+      return {
+        id,
+        documentNumber: id,
+        templateId: "t",
+        templateName: "t",
+        drafter: { id: "u", name: "n" },
+        draftedAt: within,
+        lastUpdatedAt: within,
+        signatureHash: "h",
+        status: "DONE",
+        approvalLine: [],
+        fields: [],
+        attachments: [],
+      };
+    }
+    const closedDocs = new Map<string, WorkflowInstance>([
+      ["d-fresh-1", inst("d-fresh-1")],
+      // d-fresh-2 omitted from closedDocs map; readInstance below throws for it
+    ]);
+    const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    const details = new Map<string, DetailResp>([
+      ["d-fresh-1", detailFor("d-fresh-1", within, "DONE")],
+    ]);
+    setupFetch(search, details);
+
+    const config: Config = { ...makeConfig(), closedSweepDays: 30 };
+    const storage = makeStorage({}, new Set(["d-fresh-1", "d-fresh-2"]), closedDocs);
+    storage.readInstance = async (id) => {
+      if (id === "d-fresh-2") throw new Error("EACCES: permission denied");
+      return closedDocs.get(id) ?? null;
+    };
+
+    const result = await crawlInstances(makeAuth(), config, null, storage, makeLogger());
+
+    assert.equal(result.closedSweepCount, 1, "d-fresh-1 must still be swept");
+    const readErr = result.errors.find((e) => e.target === "instance-closed-sweep:d-fresh-2");
+    assert.ok(readErr, "EACCES on d-fresh-2 must surface as a structured error");
+    assert.match(readErr.message, /EACCES/);
+  });
+
+  it("skips closed-window sweep entirely when the list stage threw", async () => {
+    // Permanent search 500 → listStageOk=false → sweep must not run.
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/user-boxes/search")) {
+        return new Response("server error", { status: 500 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const within = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    const closedDocs = new Map<string, WorkflowInstance>([
+      [
+        "d-fresh",
+        {
+          id: "d-fresh",
+          documentNumber: "d-fresh",
+          templateId: "tmpl",
+          templateName: "tmpl",
+          drafter: { id: "u", name: "n" },
+          draftedAt: within,
+          lastUpdatedAt: within,
+          signatureHash: "test-fixture-hash",
+          status: "DONE",
+          approvalLine: [],
+          fields: [],
+          attachments: [],
+        },
+      ],
+    ]);
+
+    const config: Config = { ...makeConfig(), closedSweepDays: 30 };
+    const storage = makeStorage({}, new Set(["d-fresh"]), closedDocs);
+    const result = await crawlInstances(makeAuth(), config, null, storage, makeLogger());
+
+    assert.equal(result.closedSweepCount, 0);
+    assert.ok(result.errors.some((e) => e.target === "instance-list"));
+  });
+
+  it("always sweeps in-progress without a date range and never persists a watermark for it", async () => {
+    // Even with a stale watermark file claiming an in-progress group
+    // entry (e.g. left over from before this policy or hand-edited),
+    // the search payload must omit lastUpdatedDateRange and the entry
+    // must not survive a clean run.
+    const initial: WatermarkFile = {
+      approvalDocuments: {
+        groups: {
+          "in-progress": {
+            lastUpdatedAt: "2026-04-29T00:00:00Z",
+            overlapDays: 1,
+            lastSuccessfulRunAt: "2026-04-29T00:00:00Z",
+          },
+        },
+      },
+    };
+    const search = new Map<string, SearchResp>([
+      [
+        "IN_PROGRESS",
+        { documents: [{ document: { documentKey: "ip-1" } }], total: 1, hasNext: false },
+      ],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    const details = new Map<string, DetailResp>([
+      ["ip-1", detailFor("ip-1", "2026-05-05T01:00:00Z", "IN_PROGRESS")],
+    ]);
+    const { calls } = setupFetch(search, details);
+
+    const storage = makeStorage(initial);
+    await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    const inProgressCall = calls.find(
+      (c) =>
+        c.url.includes("/user-boxes/search") &&
+        (c.body as { filter: { statuses: string[] } }).filter.statuses[0] === "IN_PROGRESS",
+    );
+    assert.ok(inProgressCall);
+    const filter = (inProgressCall.body as { filter: Record<string, unknown> }).filter;
+    assert.ok(
+      !("lastUpdatedDateRange" in filter),
+      "in-progress must always sweep without a date range",
+    );
+    // The stale entry from `initial` is left in place by the file's
+    // shape (we don't actively delete it), but a successful sweep must
+    // not advance lastSuccessfulRunAt for it — that's the only externally
+    // visible signal that the policy is in effect.
+    const wmIp = storage._watermarks.approvalDocuments?.groups["in-progress"];
+    assert.equal(
+      wmIp?.lastSuccessfulRunAt,
+      "2026-04-29T00:00:00Z",
+      "in-progress watermark must not be touched by the sweep",
+    );
+  });
+});
+
+describe("computeSignatureHash", () => {
+  function detail(
+    overrides: Partial<DocumentDetailResponse["document"]> = {},
+    processStatus: string | null = "DONE",
+  ): DocumentDetailResponse {
+    return {
+      document: {
+        documentKey: "d1",
+        code: "D-1",
+        templateKey: "t1",
+        status: "DONE",
+        title: "doc",
+        writer: { idHash: "u", name: "n" },
+        writtenAt: "2026-01-01T00:00:00Z",
+        inputs: [],
+        updatedAt: "2026-04-29T12:00:00Z",
+        comments: [],
+        ...overrides,
+      },
+      approvalProcess: processStatus ? { status: processStatus, lines: [] } : undefined,
+    };
+  }
+
+  it("is stable for identical input", () => {
+    assert.equal(computeSignatureHash(detail()), computeSignatureHash(detail()));
+  });
+
+  it("changes when document.updatedAt changes", () => {
+    const a = computeSignatureHash(detail({ updatedAt: "2026-04-29T12:00:00Z" }));
+    const b = computeSignatureHash(detail({ updatedAt: "2026-04-29T12:00:00.500Z" }));
+    assert.notEqual(a, b);
+  });
+
+  it("changes when status changes", () => {
+    const a = computeSignatureHash(detail({ status: "DONE" }));
+    const b = computeSignatureHash(detail({ status: "DECLINED" }));
+    assert.notEqual(a, b);
+  });
+
+  it("changes when a comment is added (length differs)", () => {
+    const empty = computeSignatureHash(detail({ comments: [] }));
+    const one = computeSignatureHash(
+      detail({
+        comments: [
+          {
+            idHash: "c1",
+            writer: { idHash: "u", name: "n" },
+            type: "COMMENT",
+            createdAt: "2026-04-30T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    assert.notEqual(empty, one);
+  });
+
+  it("changes when a comment is edited (updatedAt differs but length is the same)", () => {
+    const before = computeSignatureHash(
+      detail({
+        comments: [
+          {
+            idHash: "c1",
+            writer: { idHash: "u", name: "n" },
+            type: "COMMENT",
+            createdAt: "2026-04-30T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    const after = computeSignatureHash(
+      detail({
+        comments: [
+          {
+            idHash: "c1",
+            writer: { idHash: "u", name: "n" },
+            type: "COMMENT",
+            createdAt: "2026-04-30T00:00:00Z",
+            updatedAt: "2026-04-30T01:00:00Z",
+          },
+        ],
+      }),
+    );
+    assert.notEqual(before, after);
+  });
+
+  it("changes when a same-length comment swap (delete one, add another) happens in the same cycle", () => {
+    // commenters/timestamps may differ but length stays at 1; the
+    // sorted-id portion of the signature catches the swap.
+    const a = computeSignatureHash(
+      detail({
+        comments: [
+          {
+            idHash: "c-old",
+            writer: { idHash: "u", name: "n" },
+            type: "COMMENT",
+            createdAt: "2026-04-30T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    const b = computeSignatureHash(
+      detail({
+        comments: [
+          {
+            idHash: "c-new",
+            writer: { idHash: "u", name: "n" },
+            type: "COMMENT",
+            createdAt: "2026-04-30T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    assert.notEqual(a, b);
+  });
+
+  it("uses epoch-ms compare for the comment max-stamp, not lexicographic", () => {
+    // Lexicographically `2026-04-30T00:00:00.500Z` < `2026-04-30T00:00:00Z`
+    // (ms form sorts before the trailing-Z form), but the ms form is later
+    // in time. If the signature picked the lex-max it would silently equal
+    // a later run that adds the ms-form stamp on top of the trailing-Z one.
+    const baseline = computeSignatureHash(
+      detail({
+        comments: [
+          {
+            idHash: "c1",
+            writer: { idHash: "u", name: "n" },
+            type: "COMMENT",
+            createdAt: "2026-04-30T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    const withMsEdit = computeSignatureHash(
+      detail({
+        comments: [
+          {
+            idHash: "c1",
+            writer: { idHash: "u", name: "n" },
+            type: "COMMENT",
+            createdAt: "2026-04-30T00:00:00Z",
+            updatedAt: "2026-04-30T00:00:00.500Z",
+          },
+        ],
+      }),
+    );
+    assert.notEqual(baseline, withMsEdit);
+  });
+
+  it("does not depend on comment array order (sorted by idHash)", () => {
+    const c1 = {
+      idHash: "c1",
+      writer: { idHash: "u", name: "n" },
+      type: "COMMENT",
+      createdAt: "2026-04-30T00:00:00Z",
+    };
+    const c2 = {
+      idHash: "c2",
+      writer: { idHash: "u", name: "n" },
+      type: "COMMENT",
+      createdAt: "2026-04-30T00:00:00Z",
+    };
+    assert.equal(
+      computeSignatureHash(detail({ comments: [c1, c2] })),
+      computeSignatureHash(detail({ comments: [c2, c1] })),
     );
   });
 });
