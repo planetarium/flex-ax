@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { type AuthContext, apiHeaders } from "../auth/index.js";
 import type { Config } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
@@ -40,7 +41,11 @@ export async function crawlInstances(
   logger: Logger,
   mode: CrawlMode = "incremental",
 ): Promise<
-  CrawlResult & { collectedKeys: Set<string>; missingKeys: string[] }
+  CrawlResult & {
+    collectedKeys: Set<string>;
+    missingKeys: string[];
+    closedSweepCount: number;
+  }
 > {
   const startTime = Date.now();
   const result = emptyCrawlResult();
@@ -48,6 +53,8 @@ export async function crawlInstances(
   // full recon이 아닐 땐 의미가 없으므로 비워둔다 (incremental은 변경된
   // 문서만 재방문하니 disk-vs-collected diff는 거짓양성 폭증).
   let missingKeys: string[] = [];
+  // 종결 문서 closed-window sweep에서 재조회한 건 수 (informational).
+  let closedSweepCount = 0;
 
   logger.info("인스턴스(결재 문서) 수집 시작", { mode });
 
@@ -60,18 +67,35 @@ export async function crawlInstances(
     "/api/v3/approval-document/approval-documents",
   );
 
+  // 결재 문서 댓글 mutation은 `document.updatedAt`을 갱신하지 않는다
+  // (planetarium/reflex#38 검증). 그래서 워터마크 검색만으로는 IN_PROGRESS
+  // 동안의 댓글 변화를 잡을 수 없다. IN_PROGRESS는 모집단이 작고 어차피 곧
+  // 상태 전이될 가능성이 높아 매 실행 전수 sweep이 안전하고 저렴하다.
+  // → incrementalEligible=false: dateRange 안 박고 그룹 워터마크도 안 만듦.
   const searchGroups: SearchGroup[] = [
-    { label: "in-progress", statuses: ["IN_PROGRESS"], defaultOverlapDays: 1 },
-    { label: "done", statuses: ["DONE", "DECLINED", "CANCELED"], defaultOverlapDays: 2 },
+    {
+      label: "in-progress",
+      statuses: ["IN_PROGRESS"],
+      defaultOverlapDays: 1,
+      incrementalEligible: false,
+    },
+    {
+      label: "done",
+      statuses: ["DONE", "DECLINED", "CANCELED"],
+      defaultOverlapDays: 2,
+      incrementalEligible: true,
+    },
   ];
 
   const watermarks = await storage.loadWatermarks();
   const domainState: WatermarkDomainState =
     watermarks[APPROVAL_DOCUMENTS_DOMAIN] ?? { groups: {} };
-  // 모든 그룹에 워터마크가 모두 비어 있다면 부트스트랩 — 사실상 풀크롤로 동작.
-  const noWatermarks = searchGroups.every(
-    (g) => !domainState.groups[g.label]?.lastUpdatedAt,
-  );
+  // incremental-eligible 그룹들에 워터마크가 모두 비어 있다면 부트스트랩 —
+  // 사실상 풀크롤. 비-eligible 그룹(IN_PROGRESS sweep)은 어차피 매 실행
+  // 전수 fetch라 effectiveFull 판정에서 제외한다.
+  const noWatermarks = searchGroups
+    .filter((g) => g.incrementalEligible)
+    .every((g) => !domainState.groups[g.label]?.lastUpdatedAt);
   const effectiveFull = mode === "full" || noWatermarks;
   if (mode === "incremental" && noWatermarks) {
     logger.info("워터마크 없음 — bootstrap 풀크롤로 진행");
@@ -111,9 +135,11 @@ export async function crawlInstances(
   try {
     for (const group of searchGroups) {
       const existing = domainState.groups[group.label];
-      const dateRange = effectiveFull
-        ? undefined
-        : computeDateRange(existing, group.defaultOverlapDays, todayKst);
+      // incrementalEligible=false 그룹은 워터마크/풀모드 무관 항상 전수 sweep.
+      const dateRange =
+        !group.incrementalEligible || effectiveFull
+          ? undefined
+          : computeDateRange(existing, group.defaultOverlapDays, todayKst);
 
       const groupSuccessBefore = result.successCount;
       const groupFailureBefore = result.failureCount;
@@ -135,10 +161,14 @@ export async function crawlInstances(
       const groupFailure = result.failureCount - groupFailureBefore;
 
       // 그룹 단위로 워터마크 갱신 정책:
+      //   - incrementalEligible=false 그룹은 워터마크 자체를 만들지/갱신하지 않음.
+      //     IN_PROGRESS sweep은 댓글 변화 흡수가 목적이라 워터마크가 무의미하고,
+      //     watermark.json에 entry를 남기면 다음 실행의 effectiveFull 판정도
+      //     흐려진다.
       //   - 그룹 내 실패가 단 1건이라도 있으면 갱신 보류 (다음 실행에서 재시도)
       //   - 후퇴 금지 — 새 max가 기존보다 작으면 기존 lastUpdatedAt 유지
       //   - 0건 처리됐어도 그룹 자체가 클린하게 끝났으면 lastSuccessfulRunAt은 갱신
-      if (groupFailure === 0) {
+      if (group.incrementalEligible && groupFailure === 0) {
         const prev = existing?.lastUpdatedAt ?? null;
         if (observedMaxUpdatedAt && isLaterIso(observedMaxUpdatedAt, prev)) {
           domainState.groups[group.label] = {
@@ -175,6 +205,21 @@ export async function crawlInstances(
       message: error instanceof Error ? error.message : String(error),
       timestamp: nowISO(),
     });
+  }
+
+  // 종결 후 N일 윈도우 sweep — 댓글 mutation은 `document.updatedAt`을 갱신
+  // 하지 않아 워터마크 검색이 종결 후의 댓글 변화를 흡수할 수 없다. list 단계가
+  // 정상 종료된 경우에만 진행 (list가 깨지면 어차피 신뢰할 수 없는 cycle).
+  if (listStageOk && config.closedSweepDays > 0) {
+    closedSweepCount = await sweepRecentlyClosed(
+      authCtx,
+      config,
+      storage,
+      logger,
+      detailBase,
+      collectedKeys,
+      result,
+    );
   }
 
   // 사실상 풀크롤로 돌았고 list 단계가 끝까지 살아남았으며 인스턴스 단계에
@@ -225,13 +270,166 @@ export async function crawlInstances(
 
   result.durationMs = Date.now() - startTime;
   logger.info(`\n인스턴스 수집 완료: 성공 ${result.successCount}, 실패 ${result.failureCount}`);
-  return { ...result, collectedKeys, missingKeys };
+  return { ...result, collectedKeys, missingKeys, closedSweepCount };
 }
 
 interface SearchGroup {
   label: string;
   statuses: string[];
   defaultOverlapDays: number;
+  /**
+   * true: 워터마크 기반 증분 검색(`lastUpdatedDateRange`) + 그룹별 워터마크
+   * 갱신을 적용한다.
+   * false: 매 실행 전수 sweep. 워터마크를 사용하지도, 만들지도 않는다.
+   * (예: IN_PROGRESS — 댓글 mutation이 `document.updatedAt`을 안 건드려서
+   * 워터마크 검색만으로는 댓글 변화를 흡수 못 함)
+   */
+  incrementalEligible: boolean;
+}
+
+const CLOSED_STATUSES = new Set(["DONE", "DECLINED", "CANCELED"]);
+
+/**
+ * 디스크에 저장된 종결 문서 중 종결된 지 N일 이내인 것들을 detail 재조회로
+ * sweep한다. 댓글 mutation은 `document.updatedAt`을 갱신하지 않으므로
+ * 워터마크 검색만으론 종결 후 댓글 변화를 흡수할 수 없다. 종결 직후 일정
+ * 시간 안에 달리는 댓글이 거의 전부이므로 N일(기본 30) 윈도우면 실무상
+ * 충분하고, 더 오래된 doc은 acceptance criteria에 한계로 명시한다.
+ *
+ * 이미 같은 cycle에서 search → detail로 잡힌 doc(`collectedKeys.has`)은
+ * 중복 fetch를 피하기 위해 skip한다.
+ */
+async function sweepRecentlyClosed(
+  authCtx: AuthContext,
+  config: Config,
+  storage: StorageWriter,
+  logger: Logger,
+  detailBase: string,
+  collectedKeys: Set<string>,
+  result: CrawlResult,
+): Promise<number> {
+  const windowDays = config.closedSweepDays;
+  const cutoffMs = Date.now() - windowDays * MS_PER_DAY;
+
+  let existingKeys: Set<string>;
+  try {
+    existingKeys = await storage.listExistingInstanceKeys();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error("closed sweep: 디스크 enumerate 실패 — sweep 생략", { error: message });
+    result.errors.push({
+      target: "instance-closed-sweep",
+      phase: "list-existing",
+      message,
+      timestamp: nowISO(),
+    });
+    return 0;
+  }
+
+  // 메타 로드를 병렬화. 인스턴스 파일이 많을수록 순차 read는 매 cycle
+  // O(N) I/O로 누적된다.
+  const eligibleIds = [...existingKeys].filter((id) => !collectedKeys.has(id));
+  const loaded = await pooledMap(eligibleIds, config.concurrency, async (id) => {
+    try {
+      return { id, inst: await storage.readInstance(id) };
+    } catch (err) {
+      // readInstance는 ENOENT/JSON parse 실패만 null로 swallow하고 나머지는
+      // throw하기로 약속한다(권한/디스크 등). 한 파일 실패가 sweep 전체를
+      // abort시키지 않게 하되, 운영자가 알 수 있도록 errors에는 push.
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error(`closed sweep: 인스턴스 메타 로드 실패: ${id}`, { error: message });
+      result.errors.push({
+        target: `instance-closed-sweep:${id}`,
+        phase: "list-existing",
+        message,
+        timestamp: nowISO(),
+      });
+      return { id, inst: null };
+    }
+  });
+
+  const candidates: Array<{ id: string; prior: WorkflowInstance }> = [];
+  for (const { inst, id } of loaded) {
+    if (!inst) continue;
+    if (!CLOSED_STATUSES.has(inst.status)) continue;
+    if (!inst.lastUpdatedAt) continue;
+    const ms = Date.parse(inst.lastUpdatedAt);
+    if (!Number.isFinite(ms)) continue;
+    if (ms < cutoffMs) continue;
+    candidates.push({ id, prior: inst });
+  }
+
+  if (candidates.length === 0) {
+    logger.info("closed sweep: 윈도우 내 종결 문서 없음", { windowDays });
+    return 0;
+  }
+  // 메인 검색 단계의 카운터와 일관되게 — sweep도 "처리 시도한 doc 수"를
+  // totalCount에 더해야 success+failure ≤ total 불변량이 깨지지 않는다.
+  result.totalCount += candidates.length;
+  logger.info("closed sweep 시작", { windowDays, candidates: candidates.length });
+
+  const hasPathParam = /\{[^}]+\}/.test(detailBase);
+  let sweptCount = 0;
+
+  await pooledMap(candidates, config.concurrency, async ({ id: docKey, prior }) => {
+    try {
+      const detailUrl = hasPathParam
+        ? detailBase.replace(/\{[^}]+\}/, docKey)
+        : `${detailBase}/${docKey}`;
+      const detail = await withRetry(
+        () => flexFetch<DocumentDetailResponse>(authCtx, detailUrl),
+        { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
+      );
+      // 첨부는 이미 받았다고 가정하고 재다운로드 안 함 (sweep 비용 절감).
+      // 댓글이 첨부 추가를 동반하는 케이스는 흔치 않고, 본문 변경은
+      // updatedAt이 갱신되어 워터마크 search가 잡는다.
+      // mapInstance는 detail 응답으로부터 fileName만 재구성할 수 있으므로,
+      // 기존 instance가 보유한 localPath/fileSize/mimeType 같은 부가 메타는
+      // fileKey 우선 매칭으로 이번 결과에 다시 채워준다. 같은 fileName 첨부
+      // 두 개가 다른 fileKey로 존재할 수 있으므로 fileName-only 매칭은
+      // mis-association 위험이 있다. fileKey가 어느 한쪽에라도 없을 때만
+      // fileName 폴백을 쓴다.
+      const priorRaw = prior._raw as
+        | { document?: { attachments?: Array<{ file?: { fileKey?: unknown } }> } }
+        | undefined;
+      const priorRawAtts = priorRaw?.document?.attachments ?? [];
+      const priorByFileKey = new Map<string, AttachmentInfo>();
+      const priorByFileName = new Map<string, AttachmentInfo>();
+      for (let i = 0; i < prior.attachments.length; i++) {
+        const meta = prior.attachments[i];
+        const fk = priorRawAtts[i]?.file?.fileKey;
+        if (typeof fk === "string") priorByFileKey.set(fk, meta);
+        priorByFileName.set(meta.fileName, meta);
+      }
+      const attachments = (detail.document.attachments ?? []).map((att) => {
+        const byKey = att.file.fileKey ? priorByFileKey.get(att.file.fileKey) : undefined;
+        return byKey ?? priorByFileName.get(att.file.fileName) ?? { fileName: att.file.fileName };
+      });
+      const instance = mapInstance(detail, attachments);
+      await storage.saveInstance(instance);
+      collectedKeys.add(docKey);
+      result.successCount++;
+      sweptCount++;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      result.failureCount++;
+      result.errors.push({
+        target: `instance-closed-sweep:${docKey}`,
+        phase: "detail",
+        message,
+        timestamp: nowISO(),
+      });
+      logger.error(`closed sweep 실패: ${docKey}`, { error: message });
+    }
+  });
+
+  logger.info("closed sweep 완료", {
+    windowDays,
+    candidates: candidates.length,
+    swept: sweptCount,
+    failed: candidates.length - sweptCount,
+  });
+  return sweptCount;
 }
 
 function computeDateRange(
@@ -532,7 +730,7 @@ interface SearchResponse {
   }>;
 }
 
-interface DocumentDetailResponse {
+export interface DocumentDetailResponse {
   document: {
     documentKey: string;
     code: string;
@@ -571,6 +769,7 @@ interface DocumentDetailResponse {
       content?: string;
       writtenBySystem?: boolean;
       createdAt: string;
+      updatedAt?: string;
     }>;
     createdAt?: string;
     updatedAt?: string;
@@ -623,6 +822,7 @@ function mapInstance(detail: DocumentDetailResponse, attachments: AttachmentInfo
     drafter: { id: doc.writer.idHash, name: doc.writer.name },
     draftedAt: doc.writtenAt,
     lastUpdatedAt: doc.updatedAt ?? null,
+    signatureHash: computeSignatureHash(detail),
     status: doc.status,
     approvalLine,
     fields,
@@ -634,6 +834,43 @@ function mapInstance(detail: DocumentDetailResponse, attachments: AttachmentInfo
     })),
     _raw: detail,
   };
+}
+
+/**
+ * 다운스트림 변경 감지용 sha1 hash. `document.updatedAt`이 댓글 mutation을
+ * 반영하지 않는 한계를 보완한다 — 같은 doc 두 번 fetch 시 댓글이 추가/수정/
+ * 삭제됐으면 hash가 바뀐다. 단순 `comments.length`만 비교하면 (i) 같은 cycle
+ * 내 add+delete (ii) 댓글 내용 수정만 발생, 두 케이스에서 false negative.
+ *
+ * Input shape (longfin's recommendation in planetarium/reflex#38):
+ *   document.updatedAt | document.status | approvalProcess.status |
+ *   comments.length | max(comments[].updatedAt ?? comments[].createdAt) |
+ *   sorted(comments[].idHash).join(",")
+ */
+export function computeSignatureHash(detail: DocumentDetailResponse): string {
+  const doc = detail.document;
+  const comments = doc.comments ?? [];
+  let commentMaxStamp: string | null = null;
+  for (const c of comments) {
+    const stamp = c.updatedAt ?? c.createdAt;
+    // Lexicographic compare on ISO strings is unsafe across `...00Z` vs
+    // `...00.500Z` mixes — use the same epoch-ms helper the watermark
+    // commit logic uses, so signature stays stable across millisecond
+    // formatting drift.
+    if (isLaterIso(stamp, commentMaxStamp)) {
+      commentMaxStamp = stamp ?? null;
+    }
+  }
+  const commentIds = comments.map((c) => c.idHash).sort().join(",");
+  const payload = JSON.stringify([
+    doc.updatedAt ?? null,
+    doc.status,
+    detail.approvalProcess?.status ?? null,
+    comments.length,
+    commentMaxStamp,
+    commentIds,
+  ]);
+  return createHash("sha1").update(payload).digest("hex");
 }
 
 async function processAttachments(

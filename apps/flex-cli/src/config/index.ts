@@ -75,6 +75,13 @@ const configSchema = z.object({
    * - "full": 워터마크 무시, 날짜 필터 없이 전체 재수집. CLI `--full`로도 강제할 수 있다.
    */
   flexCrawlMode: z.enum(["incremental", "full"]).default("incremental"),
+  /**
+   * 종결(DONE/DECLINED/CANCELED) 문서 중 종결된 지 N일 이내인 것들을 매 cycle
+   * 추가로 detail 재조회한다. 댓글 mutation은 `document.updatedAt`을 갱신하지
+   * 않으므로(planetarium/reflex#38) 워터마크 검색만으론 종결 후 댓글을 흡수할
+   * 수 없다. 0이면 비활성. 기본 30일.
+   */
+  closedSweepDays: z.coerce.number().int().min(0).default(30),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -97,5 +104,6 @@ export function loadConfig(): Config {
     skipEndpoints: process.env.FLEX_SKIP_ENDPOINTS || undefined,
     customers: process.env.FLEX_CUSTOMERS || undefined,
     flexCrawlMode: process.env.FLEX_CRAWL_MODE || undefined,
+    closedSweepDays: process.env.FLEX_CLOSED_SWEEP_DAYS || undefined,
   });
 }

@@ -46,6 +46,8 @@ Env:
   FLEX_CUSTOMERS              크롤 대상 법인 customerIdHash (콤마 구분)
   FLEX_CRAWL_MODE             incremental(기본) | full
                               full 은 결재 문서 워터마크를 무시하고 전체 재수집
+  FLEX_CLOSED_SWEEP_DAYS=30   종결(DONE/DECLINED/CANCELED) 후 N일 이내 문서를
+                              매 cycle 추가로 detail 재조회 (댓글 흡수). 0이면 비활성
   FLEX_AX_AUTO_UPDATE=false   기동 시 자동 업데이트 비활성화`;
 
 const COMMAND_HELP: Record<string, string> = {
@@ -69,6 +71,12 @@ OS 키링에서 저장된 비밀번호를 삭제합니다.
 customer 단위로 output/<customerIdHash>/watermark.json 을 두고, 다음 실행
 시 flex 검색 요청에 lastUpdatedDateRange (KST 기준)을 적용합니다. 워터마크가
 없는 첫 실행은 자동으로 부트스트랩 풀크롤로 폴백합니다.
+
+진행 중(IN_PROGRESS) 문서는 워터마크와 무관하게 매 cycle 전체 sweep합니다 —
+flex의 document.updatedAt이 댓글 mutation으로는 갱신되지 않기 때문에
+워터마크 검색만으론 댓글 변화를 흡수할 수 없습니다. 종결(DONE/DECLINED/
+CANCELED) 문서 중 종결된 지 N일 이내인 것도 같은 이유로 매 cycle 추가
+재조회합니다 (FLEX_CLOSED_SWEEP_DAYS, 기본 30, 0이면 비활성).
 
 Options:
   --full          워터마크 무시, 결재 문서 전체 재수집 (env: FLEX_CRAWL_MODE=full)`,
