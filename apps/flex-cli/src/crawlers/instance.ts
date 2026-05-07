@@ -267,12 +267,19 @@ async function crawlSearchGroup(
     lastUpdatedDateRange: dateRange ?? null,
   });
 
+  const groupStartedAt = Date.now();
   let continuationToken: string | undefined;
   let hasMore = true;
   let isFirstPage = true;
   // 이번 그룹에서 성공적으로 상세까지 가져온 문서들의 document.updatedAt
   // 최댓값. 워커가 동시에 갱신하므로 단순 비교/대입(JS 단일 스레드 보장).
   let groupMaxUpdatedAt: string | null = null;
+  // detail/attachment/save 단계별 cumulative ms. 동시 처리이므로 모두 더하면
+  // wall clock보다 크게 나온다 — 그래서 평균(=mean)과 카운트도 함께 노출해
+  // "어디서 시간을 쓰는지"를 비교 가능하게 한다.
+  const phaseTotals = { detailMs: 0, attachmentsMs: 0, saveMs: 0 };
+  let detailCount = 0;
+  let detailMaxMs = 0;
 
   while (hasMore) {
     const searchBody = {
@@ -303,7 +310,11 @@ async function crawlSearchGroup(
         `${searchUrl}?${searchParams.toString()}`,
         searchBody,
       ),
-      { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
+      {
+        maxRetries: config.maxRetries,
+        delayMs: config.requestDelayMs,
+        onRetry: () => result.retries++,
+      },
     );
 
     const docs = page.documents ?? [];
@@ -338,17 +349,30 @@ async function crawlSearchGroup(
           ? detailBase.replace(/\{[^}]+\}/, docKey)
           : `${detailBase}/${docKey}`;
 
+        const detailStart = Date.now();
         const detail = await withRetry(
           () => flexFetch<DocumentDetailResponse>(authCtx, detailUrl),
-          { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
+          {
+            maxRetries: config.maxRetries,
+            delayMs: config.requestDelayMs,
+            onRetry: () => result.retries++,
+          },
         );
+        const detailMs = Date.now() - detailStart;
+        phaseTotals.detailMs += detailMs;
+        if (detailMs > detailMaxMs) detailMaxMs = detailMs;
+        detailCount++;
 
+        const attachStart = Date.now();
         const attachments = await processAttachments(
           authCtx, config, docKey, detail.document.attachments ?? [], storage, logger,
         );
+        phaseTotals.attachmentsMs += Date.now() - attachStart;
 
         const instance = mapInstance(detail, attachments);
+        const saveStart = Date.now();
         await storage.saveInstance(instance);
+        phaseTotals.saveMs += Date.now() - saveStart;
         const observed = detail.document.updatedAt ?? null;
         if (isLaterIso(observed, groupMaxUpdatedAt)) {
           groupMaxUpdatedAt = observed;
@@ -405,6 +429,27 @@ async function crawlSearchGroup(
 
     continuationToken = nextContinuationToken;
   }
+
+  // 단계별 소요시간 요약. detailCount=0 이면 평균이 의미 없으니 0으로 둔다.
+  // mean은 동시성에 영향을 받지 않는 per-document 비용. wall은 실제 그룹
+  // wall-clock. wall-mean 비율이 ~concurrency에 가까워야 detail이 진짜 병목.
+  const groupWallMs = Date.now() - groupStartedAt;
+  const detailMean = detailCount > 0 ? phaseTotals.detailMs / detailCount : 0;
+  const attachmentsMean = detailCount > 0 ? phaseTotals.attachmentsMs / detailCount : 0;
+  const saveMean = detailCount > 0 ? phaseTotals.saveMs / detailCount : 0;
+  logger.info("인스턴스 그룹 단계별 소요시간", {
+    group: group.label,
+    docs: detailCount,
+    wallMs: groupWallMs,
+    detail: {
+      totalMs: phaseTotals.detailMs,
+      meanMs: Math.round(detailMean),
+      maxMs: detailMaxMs,
+    },
+    attachments: { totalMs: phaseTotals.attachmentsMs, meanMs: Math.round(attachmentsMean) },
+    save: { totalMs: phaseTotals.saveMs, meanMs: Math.round(saveMean) },
+    concurrency: config.concurrency,
+  });
 
   return groupMaxUpdatedAt;
 }

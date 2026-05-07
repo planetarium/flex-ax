@@ -242,5 +242,5 @@ function isSafeIdHash(id: string): boolean {
 }
 
 function emptyResult(): CrawlResult {
-  return { totalCount: 0, successCount: 0, failureCount: 0, errors: [], durationMs: 0 };
+  return { totalCount: 0, successCount: 0, failureCount: 0, errors: [], durationMs: 0, retries: 0 };
 }

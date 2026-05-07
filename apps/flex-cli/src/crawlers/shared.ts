@@ -9,6 +9,12 @@ export interface CrawlResult {
   failureCount: number;
   errors: CrawlError[];
   durationMs: number;
+  /**
+   * withRetry가 실제로 발사한 재시도 횟수 합계. 초기 시도는 포함하지 않으며
+   * (n번 재시도 = n+1번 호출), 최종 성공/실패 여부와 무관하게 누적된다.
+   * crawl-report.json에서 throttling/네트워크 불안정 신호로 활용.
+   */
+  retries: number;
 }
 
 /** 페이지네이션 헬퍼 */
@@ -71,6 +77,12 @@ export async function withRetry<T>(
     maxRetries: number;
     delayMs: number;
     shouldRetry?: (error: unknown) => boolean;
+    /**
+     * 다음 재시도 직전에 1회 호출된다. attempt는 0-base로 직전 실패한 시도의
+     * 인덱스(즉 곧 발사할 재시도는 attempt+1번째 호출). 호출자가 재시도 횟수를
+     * 누적하려면 이 콜백에서 카운터를 올리면 된다.
+     */
+    onRetry?: (attempt: number, error: unknown) => void;
   },
 ): Promise<T> {
   let lastError: unknown;
@@ -86,6 +98,7 @@ export async function withRetry<T>(
       }
 
       if (attempt < options.maxRetries) {
+        options.onRetry?.(attempt, error);
         const retryAfter =
           error instanceof FlexHttpError && error.status === 429 ? error.retryAfterMs : undefined;
         const baseDelay = options.delayMs > 0 ? options.delayMs : 250;
@@ -176,6 +189,7 @@ export function emptyCrawlResult(): CrawlResult {
     failureCount: 0,
     errors: [],
     durationMs: 0,
+    retries: 0,
   };
 }
 
