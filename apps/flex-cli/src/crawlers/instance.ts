@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { type AuthContext, apiHeaders } from "../auth/index.js";
 import type { Config } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
@@ -604,7 +605,7 @@ interface SearchResponse {
   }>;
 }
 
-interface DocumentDetailResponse {
+export interface DocumentDetailResponse {
   document: {
     documentKey: string;
     code: string;
@@ -643,6 +644,7 @@ interface DocumentDetailResponse {
       content?: string;
       writtenBySystem?: boolean;
       createdAt: string;
+      updatedAt?: string;
     }>;
     createdAt?: string;
     updatedAt?: string;
@@ -695,6 +697,7 @@ function mapInstance(detail: DocumentDetailResponse, attachments: AttachmentInfo
     drafter: { id: doc.writer.idHash, name: doc.writer.name },
     draftedAt: doc.writtenAt,
     lastUpdatedAt: doc.updatedAt ?? null,
+    signatureHash: computeSignatureHash(detail),
     status: doc.status,
     approvalLine,
     fields,
@@ -706,6 +709,39 @@ function mapInstance(detail: DocumentDetailResponse, attachments: AttachmentInfo
     })),
     _raw: detail,
   };
+}
+
+/**
+ * 다운스트림 변경 감지용 sha1 hash. `document.updatedAt`이 댓글 mutation을
+ * 반영하지 않는 한계를 보완한다 — 같은 doc 두 번 fetch 시 댓글이 추가/수정/
+ * 삭제됐으면 hash가 바뀐다. 단순 `comments.length`만 비교하면 (i) 같은 cycle
+ * 내 add+delete (ii) 댓글 내용 수정만 발생, 두 케이스에서 false negative.
+ *
+ * Input shape (longfin's recommendation in planetarium/reflex#38):
+ *   document.updatedAt | document.status | approvalProcess.status |
+ *   comments.length | max(comments[].updatedAt ?? comments[].createdAt) |
+ *   sorted(comments[].idHash).join(",")
+ */
+export function computeSignatureHash(detail: DocumentDetailResponse): string {
+  const doc = detail.document;
+  const comments = doc.comments ?? [];
+  let commentMaxStamp: string | null = null;
+  for (const c of comments) {
+    const stamp = c.updatedAt ?? c.createdAt;
+    if (stamp && (!commentMaxStamp || stamp > commentMaxStamp)) {
+      commentMaxStamp = stamp;
+    }
+  }
+  const commentIds = comments.map((c) => c.idHash).sort().join(",");
+  const payload = JSON.stringify([
+    doc.updatedAt ?? null,
+    doc.status,
+    detail.approvalProcess?.status ?? null,
+    comments.length,
+    commentMaxStamp,
+    commentIds,
+  ]);
+  return createHash("sha1").update(payload).digest("hex");
 }
 
 async function processAttachments(

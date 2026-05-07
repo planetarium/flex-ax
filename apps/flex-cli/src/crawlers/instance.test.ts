@@ -10,7 +10,11 @@ import {
   type StorageWriter,
   type WatermarkFile,
 } from "../storage/index.js";
-import { crawlInstances } from "./instance.js";
+import {
+  computeSignatureHash,
+  crawlInstances,
+  type DocumentDetailResponse,
+} from "./instance.js";
 import { toKstDate } from "./shared.js";
 
 interface CapturedFetch {
@@ -795,6 +799,7 @@ describe("crawlInstances incremental wiring", () => {
         drafter: { id: "u", name: "n" },
         draftedAt: updatedAt,
         lastUpdatedAt: updatedAt,
+        signatureHash: "test-fixture-hash",
         status,
         approvalLine: [],
         fields: [],
@@ -859,6 +864,7 @@ describe("crawlInstances incremental wiring", () => {
           drafter: { id: "u", name: "n" },
           draftedAt: within,
           lastUpdatedAt: within,
+          signatureHash: "test-fixture-hash",
           status: "DONE",
           approvalLine: [],
           fields: [],
@@ -902,6 +908,7 @@ describe("crawlInstances incremental wiring", () => {
           drafter: { id: "u", name: "n" },
           draftedAt: within,
           lastUpdatedAt: within,
+          signatureHash: "test-fixture-hash",
           status: "DONE",
           approvalLine: [],
           fields: [],
@@ -969,6 +976,141 @@ describe("crawlInstances incremental wiring", () => {
       wmIp?.lastSuccessfulRunAt,
       "2026-04-29T00:00:00Z",
       "in-progress watermark must not be touched by the sweep",
+    );
+  });
+});
+
+describe("computeSignatureHash", () => {
+  function detail(
+    overrides: Partial<DocumentDetailResponse["document"]> = {},
+    processStatus: string | null = "DONE",
+  ): DocumentDetailResponse {
+    return {
+      document: {
+        documentKey: "d1",
+        code: "D-1",
+        templateKey: "t1",
+        status: "DONE",
+        title: "doc",
+        writer: { idHash: "u", name: "n" },
+        writtenAt: "2026-01-01T00:00:00Z",
+        inputs: [],
+        updatedAt: "2026-04-29T12:00:00Z",
+        comments: [],
+        ...overrides,
+      },
+      approvalProcess: processStatus ? { status: processStatus, lines: [] } : undefined,
+    };
+  }
+
+  it("is stable for identical input", () => {
+    assert.equal(computeSignatureHash(detail()), computeSignatureHash(detail()));
+  });
+
+  it("changes when document.updatedAt changes", () => {
+    const a = computeSignatureHash(detail({ updatedAt: "2026-04-29T12:00:00Z" }));
+    const b = computeSignatureHash(detail({ updatedAt: "2026-04-29T12:00:00.500Z" }));
+    assert.notEqual(a, b);
+  });
+
+  it("changes when status changes", () => {
+    const a = computeSignatureHash(detail({ status: "DONE" }));
+    const b = computeSignatureHash(detail({ status: "DECLINED" }));
+    assert.notEqual(a, b);
+  });
+
+  it("changes when a comment is added (length differs)", () => {
+    const empty = computeSignatureHash(detail({ comments: [] }));
+    const one = computeSignatureHash(
+      detail({
+        comments: [
+          {
+            idHash: "c1",
+            writer: { idHash: "u", name: "n" },
+            type: "COMMENT",
+            createdAt: "2026-04-30T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    assert.notEqual(empty, one);
+  });
+
+  it("changes when a comment is edited (updatedAt differs but length is the same)", () => {
+    const before = computeSignatureHash(
+      detail({
+        comments: [
+          {
+            idHash: "c1",
+            writer: { idHash: "u", name: "n" },
+            type: "COMMENT",
+            createdAt: "2026-04-30T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    const after = computeSignatureHash(
+      detail({
+        comments: [
+          {
+            idHash: "c1",
+            writer: { idHash: "u", name: "n" },
+            type: "COMMENT",
+            createdAt: "2026-04-30T00:00:00Z",
+            updatedAt: "2026-04-30T01:00:00Z",
+          },
+        ],
+      }),
+    );
+    assert.notEqual(before, after);
+  });
+
+  it("changes when a same-length comment swap (delete one, add another) happens in the same cycle", () => {
+    // commenters/timestamps may differ but length stays at 1; the
+    // sorted-id portion of the signature catches the swap.
+    const a = computeSignatureHash(
+      detail({
+        comments: [
+          {
+            idHash: "c-old",
+            writer: { idHash: "u", name: "n" },
+            type: "COMMENT",
+            createdAt: "2026-04-30T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    const b = computeSignatureHash(
+      detail({
+        comments: [
+          {
+            idHash: "c-new",
+            writer: { idHash: "u", name: "n" },
+            type: "COMMENT",
+            createdAt: "2026-04-30T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    assert.notEqual(a, b);
+  });
+
+  it("does not depend on comment array order (sorted by idHash)", () => {
+    const c1 = {
+      idHash: "c1",
+      writer: { idHash: "u", name: "n" },
+      type: "COMMENT",
+      createdAt: "2026-04-30T00:00:00Z",
+    };
+    const c2 = {
+      idHash: "c2",
+      writer: { idHash: "u", name: "n" },
+      type: "COMMENT",
+      createdAt: "2026-04-30T00:00:00Z",
+    };
+    assert.equal(
+      computeSignatureHash(detail({ comments: [c1, c2] })),
+      computeSignatureHash(detail({ comments: [c2, c1] })),
     );
   });
 });

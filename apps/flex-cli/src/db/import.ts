@@ -90,8 +90,8 @@ export async function importToSqlite(
       INSERT OR IGNORE INTO templates (id, name) VALUES (?, ?)
     `),
     instance: db.prepare(`
-      INSERT OR REPLACE INTO instances (id, document_number, template_id, drafter_id, drafted_at, last_updated_at, status, content_html, raw)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO instances (id, document_number, template_id, drafter_id, drafted_at, last_updated_at, signature_hash, status, content_html, raw)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
     fieldValue: db.prepare(`
       INSERT OR REPLACE INTO field_values (instance_id, field_name, field_type, value_text, value_number, value_date, currency)
@@ -274,6 +274,7 @@ function importInstance(
     drafter?.id ?? null,
     data.draftedAt,
     data.lastUpdatedAt ?? doc?.updatedAt ?? null,
+    data.signatureHash ?? null,
     data.status,
     (doc?.content as string) ?? null,
     JSON.stringify(raw ?? null),
@@ -392,11 +393,18 @@ function runMigrations(db: Database): void {
   const instanceCols = db
     .query("PRAGMA table_info(instances)")
     .all() as { name: string }[];
-  if (!instanceCols.some((c) => c.name === "last_updated_at")) {
+  const hasCol = (name: string) => instanceCols.some((c) => c.name === name);
+  if (!hasCol("last_updated_at")) {
     db.exec("ALTER TABLE instances ADD COLUMN last_updated_at TEXT");
+  }
+  if (!hasCol("signature_hash")) {
+    db.exec("ALTER TABLE instances ADD COLUMN signature_hash TEXT");
   }
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_instances_last_updated_at ON instances(last_updated_at DESC)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_instances_signature_hash ON instances(signature_hash)",
   );
 }
 
