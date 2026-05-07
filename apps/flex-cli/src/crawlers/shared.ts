@@ -98,7 +98,14 @@ export async function withRetry<T>(
       }
 
       if (attempt < options.maxRetries) {
-        options.onRetry?.(attempt, error);
+        // 관측/카운팅 콜백이 throw해도 retry 루프는 계속되어야 한다 — 그래야
+        // instrumentation 버그가 실제 호출 실패를 가리지 않는다. 콜백에서 던진
+        // 예외는 무시한다(자체 로깅이 콜백 책임).
+        try {
+          options.onRetry?.(attempt, error);
+        } catch {
+          // ignore instrumentation errors
+        }
         const retryAfter =
           error instanceof FlexHttpError && error.status === 429 ? error.retryAfterMs : undefined;
         const baseDelay = options.delayMs > 0 ? options.delayMs : 250;
