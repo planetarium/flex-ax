@@ -235,15 +235,19 @@ export function createStorageWriter(outputDir: string, catalogPath: string): Sto
 
     async listExistingInstanceKeys() {
       const dir = path.join(outputDir, "instances");
-      let entries: string[];
+      let entries: import("node:fs").Dirent[];
       try {
-        entries = await readdir(dir);
+        entries = await readdir(dir, { withFileTypes: true });
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === "ENOENT") return new Set<string>();
         throw err;
       }
       const keys = new Set<string>();
-      for (const name of entries) {
+      for (const entry of entries) {
+        // 디렉토리 / 비-json 엔트리 제외. `foo.json/`처럼 디렉토리가 .json
+        // 확장자를 가져도 docKey로 오인되지 않도록.
+        if (!entry.isFile()) continue;
+        const name = entry.name;
         if (!name.endsWith(".json")) continue;
         keys.add(name.slice(0, -".json".length));
       }

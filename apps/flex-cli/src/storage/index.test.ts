@@ -205,6 +205,19 @@ describe("createStorageWriter listExistingInstanceKeys", () => {
     const keys = await writer.listExistingInstanceKeys();
     assert.deepEqual([...keys].sort(), ["doc-1", "doc-2"]);
   });
+
+  it("does not misclassify a directory whose name ends in .json as a docKey", async () => {
+    const dir = await tmpStorageDir();
+    const instancesDir = path.join(dir, "instances");
+    await mkdir(instancesDir);
+    await writeFile(path.join(instancesDir, "real-doc.json"), "{}", "utf-8");
+    // A dir whose name ends in .json — readdir returns the bare name
+    // and the previous implementation would have called this a docKey.
+    await mkdir(path.join(instancesDir, "looks-like-doc.json"));
+    const writer = createStorageWriter(dir, path.join(dir, "catalog.json"));
+    const keys = await writer.listExistingInstanceKeys();
+    assert.deepEqual([...keys], ["real-doc"]);
+  });
 });
 
 describe("createStorageWriter loadWatermarks", () => {
