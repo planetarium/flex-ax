@@ -39,10 +39,15 @@ export async function crawlInstances(
   storage: StorageWriter,
   logger: Logger,
   mode: CrawlMode = "incremental",
-): Promise<CrawlResult & { collectedKeys: Set<string> }> {
+): Promise<
+  CrawlResult & { collectedKeys: Set<string>; missingKeys: string[] }
+> {
   const startTime = Date.now();
   const result = emptyCrawlResult();
   const collectedKeys = new Set<string>();
+  // full recon이 아닐 땐 의미가 없으므로 비워둔다 (incremental은 변경된
+  // 문서만 재방문하니 disk-vs-collected diff는 거짓양성 폭증).
+  let missingKeys: string[] = [];
 
   logger.info("인스턴스(결재 문서) 수집 시작", { mode });
 
@@ -73,6 +78,35 @@ export async function crawlInstances(
   }
   // to 날짜는 그룹 진입 전에 한 번 캡처해서 페이지/그룹 간 일관되게 사용.
   const todayKst = toKstDate(new Date());
+
+  // full reconciliation diff: effectiveFull일 때만 시작 시점의 디스크 상
+  // docKey 집합을 캡처해두고, 종료 후 collectedKeys와 차집합을 missing
+  // 후보로 보고서에 노출. 자동 tombstone은 별도 트랙.
+  let existingBeforeRun: Set<string> | null = null;
+  if (effectiveFull) {
+    try {
+      existingBeforeRun = await storage.listExistingInstanceKeys();
+      logger.info("full recon — 기존 docKey 스냅샷 캡처", {
+        count: existingBeforeRun.size,
+      });
+    } catch (err) {
+      // 스냅샷 실패는 missing diff만 비우고 크롤은 계속 진행 (비치명적).
+      logger.error("기존 docKey 스냅샷 실패 — missing diff 생략", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      result.errors.push({
+        target: "instance-recon",
+        phase: "list-existing",
+        message: err instanceof Error ? err.message : String(err),
+        timestamp: nowISO(),
+      });
+    }
+  }
+
+  // list-stage(검색 단계)가 try 끝까지 도달했는지 추적. crawlSearchGroup이
+  // 재시도 후에도 throw하면 catch에서 false로 전환. failureCount는 doc 단위
+  // 실패만 세므로 list 자체가 깨진 케이스를 별도로 표시해둬야 한다.
+  let listStageOk = true;
 
   try {
     for (const group of searchGroups) {
@@ -131,6 +165,7 @@ export async function crawlInstances(
       });
     }
   } catch (error) {
+    listStageOk = false;
     logger.error("인스턴스 목록 수집 중 치명적 오류", {
       error: error instanceof Error ? error.message : String(error),
     });
@@ -142,13 +177,34 @@ export async function crawlInstances(
     });
   }
 
-  // 사실상 풀크롤로 돌았고 인스턴스 단계에 단 1건의 실패도 없었을 때만
-  // lastFullReconAt 갱신. 실패가 섞이면 "전체 recon 완료" 의미가 흐려지므로,
-  // 후속 cadence-기반 자동 풀크롤 트리거가 사고로 다음 실행을 건너뛰지 않도록
-  // 보수적으로 잠근다. 정당한 0건(워크스페이스에 문서 없음, 권한 없음 등)도
-  // 클린한 recon이므로 stamp 대상이다 — successCount는 게이트하지 않는다.
-  if (effectiveFull && result.failureCount === 0) {
+  // 사실상 풀크롤로 돌았고 list 단계가 끝까지 살아남았으며 인스턴스 단계에
+  // 단 1건의 실패도 없었을 때만 lastFullReconAt 갱신. 실패/list-throw가 섞이면
+  // "전체 recon 완료" 의미가 흐려지므로, 후속 cadence-기반 자동 풀크롤
+  // 트리거가 사고로 다음 실행을 건너뛰지 않도록 보수적으로 잠근다. 정당한
+  // 0건(워크스페이스에 문서 없음, 권한 없음 등)도 클린한 recon이므로 stamp
+  // 대상이다 — successCount는 게이트하지 않는다.
+  if (effectiveFull && listStageOk && result.failureCount === 0) {
     domainState.lastFullReconAt = nowISO();
+  }
+
+  // Full recon diff — 디스크에 있었지만 이번 실행 목록에서 사라진 docKey들.
+  // 권한 회수, 삭제, flex 측 list 누락 등의 신호. 자동 tombstone은 후속.
+  // 단, 같은 그룹에 실패가 한 건이라도 있거나 list 단계가 throw로 조기
+  // 종료됐다면 collectedKeys가 부분 결과라 missing 판정을 보류한다
+  // (false positive 방지).
+  if (existingBeforeRun && listStageOk && result.failureCount === 0) {
+    const missing: string[] = [];
+    for (const key of existingBeforeRun) {
+      if (!collectedKeys.has(key)) missing.push(key);
+    }
+    missing.sort();
+    missingKeys = missing;
+    if (missing.length > 0) {
+      logger.warn("full recon: 목록에서 사라진 docKey 후보", {
+        count: missing.length,
+        sample: missing.slice(0, 10),
+      });
+    }
   }
 
   watermarks[APPROVAL_DOCUMENTS_DOMAIN] = domainState;
@@ -169,7 +225,7 @@ export async function crawlInstances(
 
   result.durationMs = Date.now() - startTime;
   logger.info(`\n인스턴스 수집 완료: 성공 ${result.successCount}, 실패 ${result.failureCount}`);
-  return { ...result, collectedKeys };
+  return { ...result, collectedKeys, missingKeys };
 }
 
 interface SearchGroup {

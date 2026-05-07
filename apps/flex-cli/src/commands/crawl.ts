@@ -160,14 +160,21 @@ async function runCrawlForCustomer(
   let instanceResult: CrawlResult = emptyResult();
   let attendanceResult: CrawlResult = emptyResult();
   let catalogEndpointsResult: CrawlResult = emptyResult();
+  let instancesMissing: string[] = [];
   let fatalError: CrawlError | null = null;
 
   try {
     templateResult = await crawlTemplates(authCtx, config, catalog, storage, logger);
     const instanceCrawlResult = await crawlInstances(authCtx, config, catalog, storage, logger, mode);
-    instanceResult = instanceCrawlResult;
+    // crawlInstances는 in-process 배선용으로 collectedKeys/missingKeys를
+    // 추가로 반환한다. report.instances에는 plain CrawlResult만 들어가야
+    // JSON 직렬화에서 Set이 `{}`로 새거나 missingKeys가 instancesMissing과
+    // 중복 노출되는 일이 없다.
+    const { collectedKeys, missingKeys, ...instancePlain } = instanceCrawlResult;
+    instanceResult = instancePlain;
+    instancesMissing = missingKeys;
     attendanceResult = await crawlAttendanceApprovals(
-      authCtx, config, catalog, storage, logger, instanceCrawlResult.collectedKeys,
+      authCtx, config, catalog, storage, logger, collectedKeys,
     );
     catalogEndpointsResult = await crawlCatalogEndpoints(authCtx, config, catalog, storage, logger);
   } catch (error) {
@@ -201,6 +208,7 @@ async function runCrawlForCustomer(
     instances: instanceResult,
     attendance: attendanceResult,
     catalogEndpoints: catalogEndpointsResult,
+    instancesMissing: instancesMissing.length > 0 ? instancesMissing : undefined,
     totalErrors,
   };
 

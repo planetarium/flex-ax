@@ -62,9 +62,13 @@ function makeLogger(): Logger {
 interface FakeStorage extends StorageWriter {
   _instances: unknown[];
   _watermarks: WatermarkFile;
+  _existingInstanceKeys: Set<string>;
 }
 
-function makeStorage(initial: WatermarkFile = {}): FakeStorage {
+function makeStorage(
+  initial: WatermarkFile = {},
+  existingInstanceKeys: Set<string> = new Set(),
+): FakeStorage {
   let watermarks: WatermarkFile = structuredClone(initial);
   const instances: unknown[] = [];
   const writer: FakeStorage = {
@@ -85,7 +89,9 @@ function makeStorage(initial: WatermarkFile = {}): FakeStorage {
     saveWatermarks: async (file) => {
       watermarks = structuredClone(file);
     },
+    listExistingInstanceKeys: async () => new Set(existingInstanceKeys),
     _instances: instances,
+    _existingInstanceKeys: existingInstanceKeys,
     get _watermarks() {
       return watermarks;
     },
@@ -589,6 +595,144 @@ describe("crawlInstances incremental wiring", () => {
     const stamped = storage._watermarks.approvalDocuments?.lastFullReconAt;
     assert.ok(stamped, "clean zero-doc full crawl must stamp lastFullReconAt");
     assert.ok(Date.parse(stamped!) >= before);
+  });
+
+  it("reports docKeys present on disk but missing from a full recon", async () => {
+    // disk had d-old1 and d-old2; this run sees d-old1 (still alive) and
+    // d-new (newly created). d-old2 disappeared from the flex listing.
+    const search = new Map<string, SearchResp>([
+      [
+        "IN_PROGRESS",
+        { documents: [{ document: { documentKey: "d-old1" } }], total: 1, hasNext: false },
+      ],
+      [
+        "CANCELED|DECLINED|DONE",
+        { documents: [{ document: { documentKey: "d-new" } }], total: 1, hasNext: false },
+      ],
+    ]);
+    const details = new Map<string, DetailResp>([
+      ["d-old1", detailFor("d-old1", "2026-05-01T00:00:00Z", "IN_PROGRESS")],
+      ["d-new", detailFor("d-new", "2026-05-04T00:00:00Z", "DONE")],
+    ]);
+    setupFetch(search, details);
+
+    const storage = makeStorage({}, new Set(["d-old1", "d-old2"]));
+    const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    assert.deepEqual(result.missingKeys, ["d-old2"]);
+  });
+
+  it("returns empty missingKeys when the full recon collected every disk key", async () => {
+    const search = new Map<string, SearchResp>([
+      [
+        "IN_PROGRESS",
+        { documents: [{ document: { documentKey: "d-only" } }], total: 1, hasNext: false },
+      ],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    const details = new Map<string, DetailResp>([
+      ["d-only", detailFor("d-only", "2026-05-01T00:00:00Z", "IN_PROGRESS")],
+    ]);
+    setupFetch(search, details);
+
+    const storage = makeStorage({}, new Set(["d-only"]));
+    const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    assert.deepEqual(result.missingKeys, []);
+  });
+
+  it("does not compute missing diff in incremental mode (avoids false positives)", async () => {
+    // With a watermark in place the run is incremental and only touches
+    // changed docs — disk-vs-collected diff would be hugely noisy.
+    const initial: WatermarkFile = {
+      approvalDocuments: {
+        groups: {
+          "in-progress": {
+            lastUpdatedAt: "2026-04-01T00:00:00Z",
+            overlapDays: 1,
+            lastSuccessfulRunAt: "2026-04-01T00:00:00Z",
+          },
+          done: {
+            lastUpdatedAt: "2026-04-01T00:00:00Z",
+            overlapDays: 2,
+            lastSuccessfulRunAt: "2026-04-01T00:00:00Z",
+          },
+        },
+      },
+    };
+    const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    setupFetch(search, new Map());
+
+    const storage = makeStorage(initial, new Set(["d-historical-1", "d-historical-2"]));
+    const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    assert.deepEqual(result.missingKeys, []);
+  });
+
+  it("withholds missing diff when the full recon had any failure (avoids false positives)", async () => {
+    // d-fail couldn't be re-fetched this run, so it landed in
+    // failureCount, not collectedKeys-as-success. Reporting it as
+    // missing would mislead operators.
+    const search = new Map<string, SearchResp>([
+      [
+        "IN_PROGRESS",
+        {
+          documents: [
+            { document: { documentKey: "d-ok" } },
+            { document: { documentKey: "d-fail" } },
+          ],
+          total: 2,
+          hasNext: false,
+        },
+      ],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    const details = new Map<string, DetailResp>([
+      ["d-ok", detailFor("d-ok", "2026-05-01T00:00:00Z", "IN_PROGRESS")],
+    ]);
+    setupFetch(search, details, new Set(["d-fail"]));
+
+    const storage = makeStorage({}, new Set(["d-ok", "d-fail", "d-historical"]));
+    const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    assert.equal(result.failureCount, 1);
+    assert.deepEqual(result.missingKeys, []);
+  });
+
+  it("withholds lastFullReconAt and missingKeys when the list stage throws", async () => {
+    // crawlSearchGroup throws after retries (search API is permanently
+    // failing). result.errors records an `instance-list` entry but
+    // failureCount stays at 0 because no doc-level work happened — the
+    // listStageOk flag must still block the full-recon outcomes.
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/user-boxes/search")) {
+        return new Response("server error", { status: 500 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const storage = makeStorage({}, new Set(["d-historical"]));
+    const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    assert.ok(
+      result.errors.some((e) => e.target === "instance-list"),
+      "list-stage error must be recorded",
+    );
+    assert.equal(result.failureCount, 0, "no doc-level failures occurred");
+    assert.equal(
+      storage._watermarks.approvalDocuments?.lastFullReconAt,
+      undefined,
+      "list-stage throw must not stamp lastFullReconAt",
+    );
+    assert.deepEqual(
+      result.missingKeys,
+      [],
+      "list-stage throw must withhold the missing diff (collectedKeys is partial)",
+    );
   });
 
   it("does not stamp lastFullReconAt when a bootstrap full crawl had any failure", async () => {

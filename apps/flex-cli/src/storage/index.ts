@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CrawlError } from "../types/common.js";
 import type { AttendanceApproval } from "../types/attendance.js";
@@ -48,6 +48,12 @@ export interface CrawlReport {
   instances: CrawlResult;
   attendance: CrawlResult;
   catalogEndpoints?: CrawlResult;
+  /**
+   * Full reconciliation diff. 풀크롤(또는 부트스트랩)에서 디스크에는 있었지만
+   * 이번 실행 검색 목록에서 사라진 docKey들. 권한 회수/문서 삭제/flex list
+   * 누락 등의 신호. 자동 tombstone은 별도 트랙. incremental 실행에선 비워둔다.
+   */
+  instancesMissing?: string[];
   totalErrors: CrawlError[];
 }
 
@@ -61,6 +67,11 @@ export interface StorageWriter {
   saveCatalog(catalog: ApiCatalog): Promise<void>;
   loadWatermarks(): Promise<WatermarkFile>;
   saveWatermarks(file: WatermarkFile): Promise<void>;
+  /**
+   * `${outputDir}/instances/` 안에 이미 저장된 docKey 집합을 반환한다.
+   * 디렉토리가 없으면 빈 set. full reconciliation diff 계산에 쓰인다.
+   */
+  listExistingInstanceKeys(): Promise<Set<string>>;
 }
 
 async function ensureDir(dir: string): Promise<void> {
@@ -220,6 +231,27 @@ export function createStorageWriter(outputDir: string, catalogPath: string): Sto
 
     async saveWatermarks(file) {
       await writeJson(path.join(outputDir, "watermark.json"), file);
+    },
+
+    async listExistingInstanceKeys() {
+      const dir = path.join(outputDir, "instances");
+      let entries: import("node:fs").Dirent[];
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return new Set<string>();
+        throw err;
+      }
+      const keys = new Set<string>();
+      for (const entry of entries) {
+        // 디렉토리 / 비-json 엔트리 제외. `foo.json/`처럼 디렉토리가 .json
+        // 확장자를 가져도 docKey로 오인되지 않도록.
+        if (!entry.isFile()) continue;
+        const name = entry.name;
+        if (!name.endsWith(".json")) continue;
+        keys.add(name.slice(0, -".json".length));
+      }
+      return keys;
     },
   };
 }
