@@ -343,6 +343,10 @@ async function crawlSearchGroup(
 
     await pooledMap(newDocs, config.concurrency, async (doc) => {
       const docKey = doc.document.documentKey;
+      // 실패한 단계를 정확히 에러 레코드에 남기기 위한 추적자. 단계별 finally
+      // 안에서 phase 누적도 함께 일어나므로, 실패한 문서의 시간도 phase totals/
+      // max에 반영되어 "에러 케이스가 병목을 숨기는" 케이스를 피한다.
+      let currentPhase: "detail" | "attachments" | "save" = "detail";
       try {
         const hasPathParam = /\{[^}]+\}/.test(detailBase);
         const detailUrl = hasPathParam
@@ -350,33 +354,47 @@ async function crawlSearchGroup(
           : `${detailBase}/${docKey}`;
 
         const detailStart = Date.now();
-        const detail = await withRetry(
-          () => flexFetch<DocumentDetailResponse>(authCtx, detailUrl),
-          {
-            maxRetries: config.maxRetries,
-            delayMs: config.requestDelayMs,
-            onRetry: () => result.retries++,
-          },
-        );
-        const detailMs = Date.now() - detailStart;
-        phaseTotals.detailMs += detailMs;
-        if (detailMs > phaseMaxes.detailMs) phaseMaxes.detailMs = detailMs;
-        detailCount++;
+        let detail: DocumentDetailResponse;
+        try {
+          detail = await withRetry(
+            () => flexFetch<DocumentDetailResponse>(authCtx, detailUrl),
+            {
+              maxRetries: config.maxRetries,
+              delayMs: config.requestDelayMs,
+              onRetry: () => result.retries++,
+            },
+          );
+        } finally {
+          const detailMs = Date.now() - detailStart;
+          phaseTotals.detailMs += detailMs;
+          if (detailMs > phaseMaxes.detailMs) phaseMaxes.detailMs = detailMs;
+          detailCount++;
+        }
 
+        currentPhase = "attachments";
         const attachStart = Date.now();
-        const attachments = await processAttachments(
-          authCtx, config, docKey, detail.document.attachments ?? [], storage, logger,
-        );
-        const attachMs = Date.now() - attachStart;
-        phaseTotals.attachmentsMs += attachMs;
-        if (attachMs > phaseMaxes.attachmentsMs) phaseMaxes.attachmentsMs = attachMs;
+        let attachments;
+        try {
+          attachments = await processAttachments(
+            authCtx, config, docKey, detail.document.attachments ?? [], storage, logger,
+          );
+        } finally {
+          const attachMs = Date.now() - attachStart;
+          phaseTotals.attachmentsMs += attachMs;
+          if (attachMs > phaseMaxes.attachmentsMs) phaseMaxes.attachmentsMs = attachMs;
+        }
 
+        currentPhase = "save";
         const instance = mapInstance(detail, attachments);
         const saveStart = Date.now();
-        await storage.saveInstance(instance);
-        const saveMs = Date.now() - saveStart;
-        phaseTotals.saveMs += saveMs;
-        if (saveMs > phaseMaxes.saveMs) phaseMaxes.saveMs = saveMs;
+        try {
+          await storage.saveInstance(instance);
+        } finally {
+          const saveMs = Date.now() - saveStart;
+          phaseTotals.saveMs += saveMs;
+          if (saveMs > phaseMaxes.saveMs) phaseMaxes.saveMs = saveMs;
+        }
+
         const observed = detail.document.updatedAt ?? null;
         if (isLaterIso(observed, groupMaxUpdatedAt)) {
           groupMaxUpdatedAt = observed;
@@ -388,11 +406,12 @@ async function crawlSearchGroup(
         result.failureCount++;
         result.errors.push({
           target: `instance:${docKey}`,
-          phase: "detail",
+          phase: currentPhase,
           message: error instanceof Error ? error.message : String(error),
           timestamp: nowISO(),
         });
         logger.error(`인스턴스 수집 실패: ${docKey}`, {
+          phase: currentPhase,
           error: error instanceof Error ? error.message : String(error),
         });
       } finally {
