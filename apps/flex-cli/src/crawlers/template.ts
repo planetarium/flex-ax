@@ -34,7 +34,11 @@ export async function crawlTemplates(
   try {
     const data = await withRetry(
       () => flexFetch<{ templates: RawTemplate[] }>(authCtx, listUrl),
-      { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
+      {
+        maxRetries: config.maxRetries,
+        delayMs: config.requestDelayMs,
+        onRetry: () => result.retries++,
+      },
     );
 
     const rawTemplates = data.templates ?? [];
@@ -58,7 +62,11 @@ export async function crawlTemplates(
 
         const detail = await withRetry(
           () => flexFetch<{ template: RawTemplateDetail }>(authCtx, finalDetailUrl),
-          { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
+          {
+            maxRetries: config.maxRetries,
+            delayMs: config.requestDelayMs,
+            onRetry: () => result.retries++,
+          },
         );
 
         const template = mapTemplate(raw, detail.template);

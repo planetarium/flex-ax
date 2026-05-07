@@ -17,7 +17,7 @@ import { crawlInstances, type CrawlMode } from "../crawlers/instance.js";
 import { crawlAttendanceApprovals } from "../crawlers/attendance.js";
 import { crawlCatalogEndpoints } from "../crawlers/catalog-endpoints.js";
 import type { CrawlError } from "../types/common.js";
-import type { CrawlResult } from "../crawlers/shared.js";
+import { type CrawlResult, emptyCrawlResult } from "../crawlers/shared.js";
 
 export async function runCrawl(args: string[] = process.argv.slice(3)): Promise<void> {
   const logger = createLogger("CRAWL");
@@ -156,10 +156,10 @@ async function runCrawlForCustomer(
 
   const startedAt = new Date().toISOString();
   const startTime = Date.now();
-  let templateResult: CrawlResult = emptyResult();
-  let instanceResult: CrawlResult = emptyResult();
-  let attendanceResult: CrawlResult = emptyResult();
-  let catalogEndpointsResult: CrawlResult = emptyResult();
+  let templateResult: CrawlResult = emptyCrawlResult();
+  let instanceResult: CrawlResult = emptyCrawlResult();
+  let attendanceResult: CrawlResult = emptyCrawlResult();
+  let catalogEndpointsResult: CrawlResult = emptyCrawlResult();
   let instancesMissing: string[] = [];
   let fatalError: CrawlError | null = null;
 
@@ -248,6 +248,3 @@ function isSafeIdHash(id: string): boolean {
   return typeof id === "string" && id.length > 0 && id.length <= 64 && /^[A-Za-z0-9_-]+$/.test(id);
 }
 
-function emptyResult(): CrawlResult {
-  return { totalCount: 0, successCount: 0, failureCount: 0, errors: [], durationMs: 0 };
-}

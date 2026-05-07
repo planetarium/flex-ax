@@ -39,7 +39,7 @@ export async function crawlAttendanceApprovals(
   logger.info("근태/휴가 승인 수집 시작");
 
   // 현재 사용자 ID를 먼저 확인
-  const userId = await getUserId(authCtx, config, logger);
+  const userId = await getUserId(authCtx, config, logger, () => result.retries++);
   if (!userId) {
     logger.error("사용자 ID를 확인할 수 없습니다");
     result.failureCount++;
@@ -68,7 +68,11 @@ export async function crawlAttendanceApprovals(
       const pageUrl = buildTimeOffUsesUrl(url, continuationToken, nextCursor);
       const data = await withRetry(
         () => flexFetch<TimeOffUsesResponse>(authCtx, pageUrl),
-        { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
+        {
+          maxRetries: config.maxRetries,
+          delayMs: config.requestDelayMs,
+          onRetry: () => result.retries++,
+        },
       );
 
       const uses = data.timeOffUses ?? [];
@@ -181,6 +185,7 @@ async function getUserId(
   authCtx: AuthContext,
   config: Config,
   logger: Logger,
+  onRetry?: (attempt: number, error: unknown) => void,
 ): Promise<string | null> {
   try {
     // /api/v2/core/me는 404이므로, workspace-users에서 currentUser를 가져옴.
@@ -193,7 +198,7 @@ async function getUserId(
           authCtx,
           `${config.flexBaseUrl}/api/v2/core/users/me/workspace-users-corp-group-affiliates`,
         ),
-      { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
+      { maxRetries: config.maxRetries, delayMs: config.requestDelayMs, onRetry },
     );
     const userId = data.currentUser?.user?.userIdHash ?? null;
     if (userId) {

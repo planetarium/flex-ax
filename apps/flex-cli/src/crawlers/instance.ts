@@ -465,12 +465,21 @@ async function crawlSearchGroup(
     lastUpdatedDateRange: dateRange ?? null,
   });
 
+  const groupStartedAt = Date.now();
   let continuationToken: string | undefined;
   let hasMore = true;
   let isFirstPage = true;
   // 이번 그룹에서 성공적으로 상세까지 가져온 문서들의 document.updatedAt
   // 최댓값. 워커가 동시에 갱신하므로 단순 비교/대입(JS 단일 스레드 보장).
   let groupMaxUpdatedAt: string | null = null;
+  // detail/attachment/save 단계별 cumulative ms. 동시 처리이므로 모두 더하면
+  // wall clock보다 크게 나온다 — 그래서 평균(=mean)과 카운트도 함께 노출해
+  // "어디서 시간을 쓰는지"를 비교 가능하게 한다. 카운트는 단계별로 따로 세야
+  // 한다: detail 실패 시 attachments/save는 시작도 안 하므로, detailCount로
+  // 모든 mean을 나누면 attachments/save 평균이 저평가된다.
+  const phaseTotals = { detailMs: 0, attachmentsMs: 0, saveMs: 0 };
+  const phaseMaxes = { detailMs: 0, attachmentsMs: 0, saveMs: 0 };
+  const phaseCounts = { detail: 0, attachments: 0, save: 0 };
 
   while (hasMore) {
     const searchBody = {
@@ -501,7 +510,11 @@ async function crawlSearchGroup(
         `${searchUrl}?${searchParams.toString()}`,
         searchBody,
       ),
-      { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
+      {
+        maxRetries: config.maxRetries,
+        delayMs: config.requestDelayMs,
+        onRetry: () => result.retries++,
+      },
     );
 
     const docs = page.documents ?? [];
@@ -530,23 +543,60 @@ async function crawlSearchGroup(
 
     await pooledMap(newDocs, config.concurrency, async (doc) => {
       const docKey = doc.document.documentKey;
+      // 실패한 단계를 정확히 에러 레코드에 남기기 위한 추적자. 단계별 finally
+      // 안에서 phase 누적도 함께 일어나므로, 실패한 문서의 시간도 phase totals/
+      // max에 반영되어 "에러 케이스가 병목을 숨기는" 케이스를 피한다.
+      let currentPhase: "detail" | "attachments" | "save" = "detail";
       try {
         const hasPathParam = /\{[^}]+\}/.test(detailBase);
         const detailUrl = hasPathParam
           ? detailBase.replace(/\{[^}]+\}/, docKey)
           : `${detailBase}/${docKey}`;
 
-        const detail = await withRetry(
-          () => flexFetch<DocumentDetailResponse>(authCtx, detailUrl),
-          { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
-        );
+        const detailStart = Date.now();
+        let detail: DocumentDetailResponse;
+        try {
+          detail = await withRetry(
+            () => flexFetch<DocumentDetailResponse>(authCtx, detailUrl),
+            {
+              maxRetries: config.maxRetries,
+              delayMs: config.requestDelayMs,
+              onRetry: () => result.retries++,
+            },
+          );
+        } finally {
+          const detailMs = Date.now() - detailStart;
+          phaseTotals.detailMs += detailMs;
+          if (detailMs > phaseMaxes.detailMs) phaseMaxes.detailMs = detailMs;
+          phaseCounts.detail++;
+        }
 
-        const attachments = await processAttachments(
-          authCtx, config, docKey, detail.document.attachments ?? [], storage, logger,
-        );
+        currentPhase = "attachments";
+        const attachStart = Date.now();
+        let attachments: AttachmentInfo[];
+        try {
+          attachments = await processAttachments(
+            authCtx, config, docKey, detail.document.attachments ?? [], storage, logger,
+          );
+        } finally {
+          const attachMs = Date.now() - attachStart;
+          phaseTotals.attachmentsMs += attachMs;
+          if (attachMs > phaseMaxes.attachmentsMs) phaseMaxes.attachmentsMs = attachMs;
+          phaseCounts.attachments++;
+        }
 
+        currentPhase = "save";
         const instance = mapInstance(detail, attachments);
-        await storage.saveInstance(instance);
+        const saveStart = Date.now();
+        try {
+          await storage.saveInstance(instance);
+        } finally {
+          const saveMs = Date.now() - saveStart;
+          phaseTotals.saveMs += saveMs;
+          if (saveMs > phaseMaxes.saveMs) phaseMaxes.saveMs = saveMs;
+          phaseCounts.save++;
+        }
+
         const observed = detail.document.updatedAt ?? null;
         if (isLaterIso(observed, groupMaxUpdatedAt)) {
           groupMaxUpdatedAt = observed;
@@ -558,11 +608,12 @@ async function crawlSearchGroup(
         result.failureCount++;
         result.errors.push({
           target: `instance:${docKey}`,
-          phase: "detail",
+          phase: currentPhase,
           message: error instanceof Error ? error.message : String(error),
           timestamp: nowISO(),
         });
         logger.error(`인스턴스 수집 실패: ${docKey}`, {
+          phase: currentPhase,
           error: error instanceof Error ? error.message : String(error),
         });
       } finally {
@@ -603,6 +654,38 @@ async function crawlSearchGroup(
 
     continuationToken = nextContinuationToken;
   }
+
+  // 단계별 소요시간 요약. mean은 해당 단계가 실제로 시작된 횟수로 나눈다 —
+  // detail 실패 시 attachments/save는 시작도 안 하므로 attachments/save mean을
+  // detailCount로 나누면 저평가된다. wall은 실제 그룹 wall-clock으로,
+  // sum/wall 비율이 ~concurrency에 가까워야 그 단계가 진짜 병목.
+  const groupWallMs = Date.now() - groupStartedAt;
+  const meanOf = (totalMs: number, count: number): number =>
+    count > 0 ? Math.round(totalMs / count) : 0;
+  logger.info("인스턴스 그룹 단계별 소요시간", {
+    group: group.label,
+    docs: phaseCounts.detail,
+    wallMs: groupWallMs,
+    detail: {
+      count: phaseCounts.detail,
+      totalMs: phaseTotals.detailMs,
+      meanMs: meanOf(phaseTotals.detailMs, phaseCounts.detail),
+      maxMs: phaseMaxes.detailMs,
+    },
+    attachments: {
+      count: phaseCounts.attachments,
+      totalMs: phaseTotals.attachmentsMs,
+      meanMs: meanOf(phaseTotals.attachmentsMs, phaseCounts.attachments),
+      maxMs: phaseMaxes.attachmentsMs,
+    },
+    save: {
+      count: phaseCounts.save,
+      totalMs: phaseTotals.saveMs,
+      meanMs: meanOf(phaseTotals.saveMs, phaseCounts.save),
+      maxMs: phaseMaxes.saveMs,
+    },
+    concurrency: config.concurrency,
+  });
 
   return groupMaxUpdatedAt;
 }

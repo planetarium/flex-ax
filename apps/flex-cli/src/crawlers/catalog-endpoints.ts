@@ -146,6 +146,7 @@ export async function crawlCatalogEndpoints(
           // 4xx는 권한 미보유/미구독 등 영구적 실패가 대부분이므로 재시도하지 않는다.
           // (5xx와 네트워크 에러만 재시도)
           shouldRetry: (err) => !is4xxError(err),
+          onRetry: () => result.retries++,
         },
       );
 
