@@ -348,7 +348,7 @@ async function sweepRecentlyClosed(
     }
   });
 
-  const candidates: string[] = [];
+  const candidates: Array<{ id: string; prior: WorkflowInstance }> = [];
   for (const { inst, id } of loaded) {
     if (!inst) continue;
     if (!CLOSED_STATUSES.has(inst.status)) continue;
@@ -356,7 +356,7 @@ async function sweepRecentlyClosed(
     const ms = Date.parse(inst.lastUpdatedAt);
     if (!Number.isFinite(ms)) continue;
     if (ms < cutoffMs) continue;
-    candidates.push(id);
+    candidates.push({ id, prior: inst });
   }
 
   if (candidates.length === 0) {
@@ -371,7 +371,7 @@ async function sweepRecentlyClosed(
   const hasPathParam = /\{[^}]+\}/.test(detailBase);
   let sweptCount = 0;
 
-  await pooledMap(candidates, config.concurrency, async (docKey) => {
+  await pooledMap(candidates, config.concurrency, async ({ id: docKey, prior }) => {
     try {
       const detailUrl = hasPathParam
         ? detailBase.replace(/\{[^}]+\}/, docKey)
@@ -383,9 +383,15 @@ async function sweepRecentlyClosed(
       // 첨부는 이미 받았다고 가정하고 재다운로드 안 함 (sweep 비용 절감).
       // 댓글이 첨부 추가를 동반하는 케이스는 흔치 않고, 본문 변경은
       // updatedAt이 갱신되어 워터마크 search가 잡는다.
-      const attachments = (detail.document.attachments ?? []).map((att) => ({
-        fileName: att.file.fileName,
-      }));
+      // mapInstance는 detail 응답으로부터 fileName만 재구성할 수 있으므로,
+      // 기존에 저장된 instance가 보유한 localPath/fileSize/mimeType 같은
+      // 부가 메타는 fileName 매칭으로 이번 결과에 다시 채워준다 — 그렇지
+      // 않으면 sweep이 import 시 local_path를 NULL로 덮어쓰게 된다.
+      const priorByName = new Map(prior.attachments.map((a) => [a.fileName, a]));
+      const attachments = (detail.document.attachments ?? []).map((att) => {
+        const fallback = priorByName.get(att.file.fileName);
+        return fallback ?? { fileName: att.file.fileName };
+      });
       const instance = mapInstance(detail, attachments);
       await storage.saveInstance(instance);
       collectedKeys.add(docKey);

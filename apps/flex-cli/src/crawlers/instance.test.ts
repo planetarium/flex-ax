@@ -858,6 +858,73 @@ describe("crawlInstances incremental wiring", () => {
     assert.ok(!storage._instances.some((i) => i.id === "d-in-progress"));
   });
 
+  it("preserves prior attachment metadata (localPath etc.) when sweeping", async () => {
+    // The sweep refetches detail to pick up late comments, but
+    // attachments themselves rarely change at that point. mapInstance
+    // can only reconstruct fileName from the detail response, so any
+    // prior localPath / fileSize / mimeType must be merged back in by
+    // fileName so the importer keeps writing real local_path values.
+    const within = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    const prior: WorkflowInstance = {
+      id: "d-fresh",
+      documentNumber: "d-fresh",
+      templateId: "t",
+      templateName: "t",
+      drafter: { id: "u", name: "n" },
+      draftedAt: within,
+      lastUpdatedAt: within,
+      signatureHash: "old-hash",
+      status: "DONE",
+      approvalLine: [],
+      fields: [],
+      attachments: [
+        {
+          fileName: "report.pdf",
+          localPath: "/cache/d-fresh/report.pdf",
+          fileSize: 12345,
+          mimeType: "application/pdf",
+        },
+      ],
+    };
+    const closedDocs = new Map<string, WorkflowInstance>([["d-fresh", prior]]);
+    const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    const detailWithSameAttachment: DetailResp = {
+      ...detailFor("d-fresh", within, "DONE"),
+    };
+    detailWithSameAttachment.document = {
+      ...detailWithSameAttachment.document,
+    };
+    // Inject the same fileName on the detail's attachments so the merge
+    // path actually fires. (detailFor doesn't include attachments by default.)
+    (detailWithSameAttachment.document as unknown as { attachments: Array<{ idHash: string; file: { fileKey: string; fileName: string; downloadUrl: string } }> }).attachments = [
+      {
+        idHash: "att-1",
+        file: {
+          fileKey: "fk-1",
+          fileName: "report.pdf",
+          downloadUrl: "https://example.invalid/x",
+        },
+      },
+    ];
+    const details = new Map<string, DetailResp>([["d-fresh", detailWithSameAttachment]]);
+    setupFetch(search, details);
+
+    const config: Config = { ...makeConfig(), closedSweepDays: 30 };
+    const storage = makeStorage({}, new Set(["d-fresh"]), closedDocs);
+    await crawlInstances(makeAuth(), config, null, storage, makeLogger());
+
+    const saved = storage._instances.find((i) => i.id === "d-fresh");
+    assert.ok(saved, "d-fresh must be saved by the sweep");
+    const att = saved.attachments[0];
+    assert.equal(att.fileName, "report.pdf");
+    assert.equal(att.localPath, "/cache/d-fresh/report.pdf", "localPath must be carried over from prior");
+    assert.equal(att.fileSize, 12345, "fileSize must be carried over from prior");
+    assert.equal(att.mimeType, "application/pdf", "mimeType must be carried over from prior");
+  });
+
   it("disables closed-window sweep when closedSweepDays=0", async () => {
     const within = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
     const closedDocs = new Map<string, WorkflowInstance>([

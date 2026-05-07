@@ -220,6 +220,54 @@ describe("createStorageWriter listExistingInstanceKeys", () => {
   });
 });
 
+describe("createStorageWriter readInstance", () => {
+  it("returns null for a missing file (ENOENT)", async () => {
+    const dir = await tmpStorageDir();
+    const writer = createStorageWriter(dir, path.join(dir, "catalog.json"));
+    assert.equal(await writer.readInstance("does-not-exist"), null);
+  });
+
+  it("returns null when JSON is malformed", async () => {
+    const dir = await tmpStorageDir();
+    await mkdir(path.join(dir, "instances"));
+    await writeFile(path.join(dir, "instances", "bad.json"), "{ not json", "utf-8");
+    const writer = createStorageWriter(dir, path.join(dir, "catalog.json"));
+    assert.equal(await writer.readInstance("bad"), null);
+  });
+
+  it("normalizes legacy on-disk shapes that pre-date later columns", async () => {
+    // An instance JSON written before signatureHash / lastUpdatedAt /
+    // attachments existed must still come back with those slots filled
+    // in (as null / []), not undefined, so downstream null-checks and
+    // .length reads don't fault.
+    const dir = await tmpStorageDir();
+    await mkdir(path.join(dir, "instances"));
+    const legacy = {
+      id: "old",
+      documentNumber: "old-1",
+      templateId: "t",
+      templateName: "t",
+      drafter: { id: "u", name: "n" },
+      draftedAt: "2025-01-01T00:00:00Z",
+      status: "DONE",
+      // signatureHash, lastUpdatedAt, attachments, fields, approvalLine all absent
+    };
+    await writeFile(
+      path.join(dir, "instances", "old.json"),
+      JSON.stringify(legacy),
+      "utf-8",
+    );
+    const writer = createStorageWriter(dir, path.join(dir, "catalog.json"));
+    const inst = await writer.readInstance("old");
+    assert.ok(inst);
+    assert.equal(inst.signatureHash, null);
+    assert.equal(inst.lastUpdatedAt, null);
+    assert.deepEqual(inst.attachments, []);
+    assert.deepEqual(inst.fields, []);
+    assert.deepEqual(inst.approvalLine, []);
+  });
+});
+
 describe("createStorageWriter loadWatermarks", () => {
   it("returns {} when watermark.json is missing (ENOENT)", async () => {
     const dir = await tmpStorageDir();

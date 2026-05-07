@@ -248,11 +248,24 @@ export function createStorageWriter(outputDir: string, catalogPath: string): Sto
         if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw err;
       }
+      let parsed: unknown;
       try {
-        return JSON.parse(content) as WorkflowInstance;
+        parsed = JSON.parse(content);
       } catch {
         return null;
       }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      // 정규화 — instance JSON이 디스크에 쓰일 당시 schema에 없던 필드는
+      // undefined로 들어오는데, 캐스트만 하면 type system은 이를 모르고
+      // downstream의 null 비교가 어긋난다. 누락 필드를 명시적인 기본값으로
+      // 채워 옛 파일도 새 shape에 맞게 읽히도록 한다.
+      const obj = parsed as Record<string, unknown>;
+      if (obj.signatureHash === undefined) obj.signatureHash = null;
+      if (obj.lastUpdatedAt === undefined) obj.lastUpdatedAt = null;
+      if (!Array.isArray(obj.attachments)) obj.attachments = [];
+      if (!Array.isArray(obj.fields)) obj.fields = [];
+      if (!Array.isArray(obj.approvalLine)) obj.approvalLine = [];
+      return obj as unknown as WorkflowInstance;
     },
 
     async listExistingInstanceKeys() {
