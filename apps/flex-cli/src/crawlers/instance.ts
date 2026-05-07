@@ -40,7 +40,11 @@ export async function crawlInstances(
   logger: Logger,
   mode: CrawlMode = "incremental",
 ): Promise<
-  CrawlResult & { collectedKeys: Set<string>; missingKeys: string[] }
+  CrawlResult & {
+    collectedKeys: Set<string>;
+    missingKeys: string[];
+    closedSweepCount: number;
+  }
 > {
   const startTime = Date.now();
   const result = emptyCrawlResult();
@@ -48,6 +52,8 @@ export async function crawlInstances(
   // full recon이 아닐 땐 의미가 없으므로 비워둔다 (incremental은 변경된
   // 문서만 재방문하니 disk-vs-collected diff는 거짓양성 폭증).
   let missingKeys: string[] = [];
+  // 종결 문서 closed-window sweep에서 재조회한 건 수 (informational).
+  let closedSweepCount = 0;
 
   logger.info("인스턴스(결재 문서) 수집 시작", { mode });
 
@@ -200,6 +206,21 @@ export async function crawlInstances(
     });
   }
 
+  // 종결 후 N일 윈도우 sweep — 댓글 mutation은 `document.updatedAt`을 갱신
+  // 하지 않아 워터마크 검색이 종결 후의 댓글 변화를 흡수할 수 없다. list 단계가
+  // 정상 종료된 경우에만 진행 (list가 깨지면 어차피 신뢰할 수 없는 cycle).
+  if (listStageOk && config.closedSweepDays > 0) {
+    closedSweepCount = await sweepRecentlyClosed(
+      authCtx,
+      config,
+      storage,
+      logger,
+      detailBase,
+      collectedKeys,
+      result,
+    );
+  }
+
   // 사실상 풀크롤로 돌았고 list 단계가 끝까지 살아남았으며 인스턴스 단계에
   // 단 1건의 실패도 없었을 때만 lastFullReconAt 갱신. 실패/list-throw가 섞이면
   // "전체 recon 완료" 의미가 흐려지므로, 후속 cadence-기반 자동 풀크롤
@@ -248,7 +269,7 @@ export async function crawlInstances(
 
   result.durationMs = Date.now() - startTime;
   logger.info(`\n인스턴스 수집 완료: 성공 ${result.successCount}, 실패 ${result.failureCount}`);
-  return { ...result, collectedKeys, missingKeys };
+  return { ...result, collectedKeys, missingKeys, closedSweepCount };
 }
 
 interface SearchGroup {
@@ -263,6 +284,109 @@ interface SearchGroup {
    * 워터마크 검색만으로는 댓글 변화를 흡수 못 함)
    */
   incrementalEligible: boolean;
+}
+
+const CLOSED_STATUSES = new Set(["DONE", "DECLINED", "CANCELED"]);
+
+/**
+ * 디스크에 저장된 종결 문서 중 종결된 지 N일 이내인 것들을 detail 재조회로
+ * sweep한다. 댓글 mutation은 `document.updatedAt`을 갱신하지 않으므로
+ * 워터마크 검색만으론 종결 후 댓글 변화를 흡수할 수 없다. 종결 직후 일정
+ * 시간 안에 달리는 댓글이 거의 전부이므로 N일(기본 30) 윈도우면 실무상
+ * 충분하고, 더 오래된 doc은 acceptance criteria에 한계로 명시한다.
+ *
+ * 이미 같은 cycle에서 search → detail로 잡힌 doc(`collectedKeys.has`)은
+ * 중복 fetch를 피하기 위해 skip한다.
+ */
+async function sweepRecentlyClosed(
+  authCtx: AuthContext,
+  config: Config,
+  storage: StorageWriter,
+  logger: Logger,
+  detailBase: string,
+  collectedKeys: Set<string>,
+  result: CrawlResult,
+): Promise<number> {
+  const windowDays = config.closedSweepDays;
+  const cutoffMs = Date.now() - windowDays * MS_PER_DAY;
+
+  let existingKeys: Set<string>;
+  try {
+    existingKeys = await storage.listExistingInstanceKeys();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error("closed sweep: 디스크 enumerate 실패 — sweep 생략", { error: message });
+    result.errors.push({
+      target: "instance-closed-sweep",
+      phase: "list-existing",
+      message,
+      timestamp: nowISO(),
+    });
+    return 0;
+  }
+
+  const candidates: string[] = [];
+  for (const id of existingKeys) {
+    if (collectedKeys.has(id)) continue;
+    const inst = await storage.readInstance(id).catch(() => null);
+    if (!inst) continue;
+    if (!CLOSED_STATUSES.has(inst.status)) continue;
+    if (!inst.lastUpdatedAt) continue;
+    const ms = Date.parse(inst.lastUpdatedAt);
+    if (!Number.isFinite(ms)) continue;
+    if (ms < cutoffMs) continue;
+    candidates.push(id);
+  }
+
+  if (candidates.length === 0) {
+    logger.info("closed sweep: 윈도우 내 종결 문서 없음", { windowDays });
+    return 0;
+  }
+  logger.info("closed sweep 시작", { windowDays, candidates: candidates.length });
+
+  const hasPathParam = /\{[^}]+\}/.test(detailBase);
+  let sweptCount = 0;
+
+  await pooledMap(candidates, config.concurrency, async (docKey) => {
+    try {
+      const detailUrl = hasPathParam
+        ? detailBase.replace(/\{[^}]+\}/, docKey)
+        : `${detailBase}/${docKey}`;
+      const detail = await withRetry(
+        () => flexFetch<DocumentDetailResponse>(authCtx, detailUrl),
+        { maxRetries: config.maxRetries, delayMs: config.requestDelayMs },
+      );
+      // 첨부는 이미 받았다고 가정하고 재다운로드 안 함 (sweep 비용 절감).
+      // 댓글이 첨부 추가를 동반하는 케이스는 흔치 않고, 본문 변경은
+      // updatedAt이 갱신되어 워터마크 search가 잡는다.
+      const attachments = (detail.document.attachments ?? []).map((att) => ({
+        fileName: att.file.fileName,
+      }));
+      const instance = mapInstance(detail, attachments);
+      await storage.saveInstance(instance);
+      collectedKeys.add(docKey);
+      result.successCount++;
+      sweptCount++;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      result.failureCount++;
+      result.errors.push({
+        target: `instance-closed-sweep:${docKey}`,
+        phase: "detail",
+        message,
+        timestamp: nowISO(),
+      });
+      logger.error(`closed sweep 실패: ${docKey}`, { error: message });
+    }
+  });
+
+  logger.info("closed sweep 완료", {
+    windowDays,
+    candidates: candidates.length,
+    swept: sweptCount,
+    failed: candidates.length - sweptCount,
+  });
+  return sweptCount;
 }
 
 function computeDateRange(

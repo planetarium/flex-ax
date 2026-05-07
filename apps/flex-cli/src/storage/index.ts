@@ -72,6 +72,11 @@ export interface StorageWriter {
    * 디렉토리가 없으면 빈 set. full reconciliation diff 계산에 쓰인다.
    */
   listExistingInstanceKeys(): Promise<Set<string>>;
+  /**
+   * 저장된 단일 인스턴스 JSON을 읽는다. 없거나 파싱 실패면 null.
+   * closed-window sweep이 status / lastUpdatedAt 메타만 보기 위해 사용한다.
+   */
+  readInstance(id: string): Promise<WorkflowInstance | null>;
 }
 
 async function ensureDir(dir: string): Promise<void> {
@@ -231,6 +236,23 @@ export function createStorageWriter(outputDir: string, catalogPath: string): Sto
 
     async saveWatermarks(file) {
       await writeJson(path.join(outputDir, "watermark.json"), file);
+    },
+
+    async readInstance(id) {
+      const safeId = path.basename(id);
+      const filePath = path.join(outputDir, "instances", `${safeId}.json`);
+      let content: string;
+      try {
+        content = await readFile(filePath, "utf-8");
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw err;
+      }
+      try {
+        return JSON.parse(content) as WorkflowInstance;
+      } catch {
+        return null;
+      }
     },
 
     async listExistingInstanceKeys() {

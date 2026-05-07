@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { AuthContext } from "../auth/index.js";
 import type { Config } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
+import type { WorkflowInstance } from "../types/instance.js";
 import {
   normalizeWatermarkFile,
   type CrawlReport,
@@ -47,6 +48,7 @@ function makeConfig(): Config {
     skipEndpoints: [],
     customers: [],
     flexCrawlMode: "incremental",
+    closedSweepDays: 0, // tests opt in per-case
   };
 }
 
@@ -60,17 +62,19 @@ function makeLogger(): Logger {
 }
 
 interface FakeStorage extends StorageWriter {
-  _instances: unknown[];
+  _instances: WorkflowInstance[];
   _watermarks: WatermarkFile;
   _existingInstanceKeys: Set<string>;
+  _closedDocs: Map<string, WorkflowInstance>;
 }
 
 function makeStorage(
   initial: WatermarkFile = {},
   existingInstanceKeys: Set<string> = new Set(),
+  closedDocs: Map<string, WorkflowInstance> = new Map(),
 ): FakeStorage {
   let watermarks: WatermarkFile = structuredClone(initial);
-  const instances: unknown[] = [];
+  const instances: WorkflowInstance[] = [];
   const writer: FakeStorage = {
     saveTemplate: async () => {},
     saveInstance: async (i) => {
@@ -90,8 +94,10 @@ function makeStorage(
       watermarks = structuredClone(file);
     },
     listExistingInstanceKeys: async () => new Set(existingInstanceKeys),
+    readInstance: async (id) => closedDocs.get(id) ?? null,
     _instances: instances,
     _existingInstanceKeys: existingInstanceKeys,
+    _closedDocs: closedDocs,
     get _watermarks() {
       return watermarks;
     },
@@ -768,6 +774,148 @@ describe("crawlInstances incremental wiring", () => {
       storage._watermarks.approvalDocuments!.groups["done"].lastUpdatedAt,
       "2026-05-01T00:00:00Z",
     );
+  });
+
+  it("re-fetches recently-closed docs (closed-window sweep) and skips ones already collected", async () => {
+    // Disk has three closed docs:
+    //   - d-fresh-1: closed within window, not seen by main search → MUST sweep
+    //   - d-fresh-2: closed within window, ALREADY collected by main search → MUST skip (no double fetch)
+    //   - d-stale: closed outside window → MUST skip
+    // and one in-progress (must be ignored — it's the IN_PROGRESS sweep's job).
+    const now = Date.now();
+    const within = new Date(now - 10 * 24 * 60 * 60 * 1000).toISOString(); // 10d ago
+    const outside = new Date(now - 100 * 24 * 60 * 60 * 1000).toISOString(); // 100d ago
+
+    function closedInstance(id: string, updatedAt: string, status = "DONE"): WorkflowInstance {
+      return {
+        id,
+        documentNumber: id,
+        templateId: "tmpl",
+        templateName: "tmpl",
+        drafter: { id: "u", name: "n" },
+        draftedAt: updatedAt,
+        lastUpdatedAt: updatedAt,
+        status,
+        approvalLine: [],
+        fields: [],
+        attachments: [],
+      };
+    }
+
+    const closedDocs = new Map<string, WorkflowInstance>([
+      ["d-fresh-1", closedInstance("d-fresh-1", within, "DONE")],
+      ["d-fresh-2", closedInstance("d-fresh-2", within, "DECLINED")],
+      ["d-stale", closedInstance("d-stale", outside, "DONE")],
+      ["d-in-progress", closedInstance("d-in-progress", within, "IN_PROGRESS")],
+    ]);
+    const existingKeys = new Set(closedDocs.keys());
+
+    // Main search returns d-fresh-2 in the done group (it just got an
+    // updatedAt bump from a status comment cycle, hypothetically).
+    const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
+      [
+        "CANCELED|DECLINED|DONE",
+        { documents: [{ document: { documentKey: "d-fresh-2" } }], total: 1, hasNext: false },
+      ],
+    ]);
+    const details = new Map<string, DetailResp>([
+      ["d-fresh-1", detailFor("d-fresh-1", within, "DONE")],
+      ["d-fresh-2", detailFor("d-fresh-2", within, "DECLINED")],
+    ]);
+    setupFetch(search, details);
+
+    const config: Config = { ...makeConfig(), closedSweepDays: 30 };
+    const storage = makeStorage({}, existingKeys, closedDocs);
+    const result = await crawlInstances(makeAuth(), config, null, storage, makeLogger());
+
+    assert.equal(result.closedSweepCount, 1, "only d-fresh-1 should be swept");
+    // d-fresh-2 was collected by main search; sweep must not double-fetch
+    assert.equal(
+      storage._instances.filter((i) => i.id === "d-fresh-2").length,
+      1,
+      "d-fresh-2 must be saved exactly once",
+    );
+    // d-fresh-1 came in via sweep
+    assert.ok(
+      storage._instances.some((i) => i.id === "d-fresh-1"),
+      "d-fresh-1 must be in storage after sweep",
+    );
+    // d-stale and d-in-progress must NOT be touched
+    assert.ok(!storage._instances.some((i) => i.id === "d-stale"));
+    assert.ok(!storage._instances.some((i) => i.id === "d-in-progress"));
+  });
+
+  it("disables closed-window sweep when closedSweepDays=0", async () => {
+    const within = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    const closedDocs = new Map<string, WorkflowInstance>([
+      [
+        "d-fresh",
+        {
+          id: "d-fresh",
+          documentNumber: "d-fresh",
+          templateId: "tmpl",
+          templateName: "tmpl",
+          drafter: { id: "u", name: "n" },
+          draftedAt: within,
+          lastUpdatedAt: within,
+          status: "DONE",
+          approvalLine: [],
+          fields: [],
+          attachments: [],
+        },
+      ],
+    ]);
+    const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    setupFetch(search, new Map());
+
+    const config: Config = { ...makeConfig(), closedSweepDays: 0 };
+    const storage = makeStorage({}, new Set(["d-fresh"]), closedDocs);
+    const result = await crawlInstances(makeAuth(), config, null, storage, makeLogger());
+
+    assert.equal(result.closedSweepCount, 0);
+    assert.equal(storage._instances.length, 0);
+  });
+
+  it("skips closed-window sweep entirely when the list stage threw", async () => {
+    // Permanent search 500 → listStageOk=false → sweep must not run.
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/user-boxes/search")) {
+        return new Response("server error", { status: 500 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const within = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    const closedDocs = new Map<string, WorkflowInstance>([
+      [
+        "d-fresh",
+        {
+          id: "d-fresh",
+          documentNumber: "d-fresh",
+          templateId: "tmpl",
+          templateName: "tmpl",
+          drafter: { id: "u", name: "n" },
+          draftedAt: within,
+          lastUpdatedAt: within,
+          status: "DONE",
+          approvalLine: [],
+          fields: [],
+          attachments: [],
+        },
+      ],
+    ]);
+
+    const config: Config = { ...makeConfig(), closedSweepDays: 30 };
+    const storage = makeStorage({}, new Set(["d-fresh"]), closedDocs);
+    const result = await crawlInstances(makeAuth(), config, null, storage, makeLogger());
+
+    assert.equal(result.closedSweepCount, 0);
+    assert.ok(result.errors.some((e) => e.target === "instance-list"));
   });
 
   it("always sweeps in-progress without a date range and never persists a watermark for it", async () => {
