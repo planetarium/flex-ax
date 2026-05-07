@@ -363,6 +363,9 @@ async function sweepRecentlyClosed(
     logger.info("closed sweep: 윈도우 내 종결 문서 없음", { windowDays });
     return 0;
   }
+  // 메인 검색 단계의 카운터와 일관되게 — sweep도 "처리 시도한 doc 수"를
+  // totalCount에 더해야 success+failure ≤ total 불변량이 깨지지 않는다.
+  result.totalCount += candidates.length;
   logger.info("closed sweep 시작", { windowDays, candidates: candidates.length });
 
   const hasPathParam = /\{[^}]+\}/.test(detailBase);

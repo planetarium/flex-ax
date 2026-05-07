@@ -166,11 +166,18 @@ async function runCrawlForCustomer(
   try {
     templateResult = await crawlTemplates(authCtx, config, catalog, storage, logger);
     const instanceCrawlResult = await crawlInstances(authCtx, config, catalog, storage, logger, mode);
-    // crawlInstances는 in-process 배선용으로 collectedKeys/missingKeys를
-    // 추가로 반환한다. report.instances에는 plain CrawlResult만 들어가야
-    // JSON 직렬화에서 Set이 `{}`로 새거나 missingKeys가 instancesMissing과
-    // 중복 노출되는 일이 없다.
-    const { collectedKeys, missingKeys, ...instancePlain } = instanceCrawlResult;
+    // crawlInstances는 in-process 배선용으로 collectedKeys / missingKeys /
+    // closedSweepCount를 추가로 반환한다. report.instances에는 plain CrawlResult
+    // 만 들어가야 JSON 직렬화에서 Set이 `{}`로 새거나 추가 필드가 노출되는 일이
+    // 없다. closedSweepCount는 instance.ts 안에서 logger.info로 이미 보고되므로
+    // 여기서는 destructure로 떼어내기만 한다.
+    const {
+      collectedKeys,
+      missingKeys,
+      closedSweepCount: _closedSweepCount,
+      ...instancePlain
+    } = instanceCrawlResult;
+    void _closedSweepCount;
     instanceResult = instancePlain;
     instancesMissing = missingKeys;
     attendanceResult = await crawlAttendanceApprovals(

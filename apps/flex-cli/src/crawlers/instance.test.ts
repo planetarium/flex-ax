@@ -835,6 +835,13 @@ describe("crawlInstances incremental wiring", () => {
     const result = await crawlInstances(makeAuth(), config, null, storage, makeLogger());
 
     assert.equal(result.closedSweepCount, 1, "only d-fresh-1 should be swept");
+    // success + failure must not exceed totalCount; the sweep counts
+    // attempted candidates into total just like main search counts new
+    // search hits, so the unified counter stays consistent.
+    assert.ok(
+      result.successCount + result.failureCount <= result.totalCount,
+      `counters inconsistent: success=${result.successCount} failure=${result.failureCount} total=${result.totalCount}`,
+    );
     // d-fresh-2 was collected by main search; sweep must not double-fetch
     assert.equal(
       storage._instances.filter((i) => i.id === "d-fresh-2").length,
