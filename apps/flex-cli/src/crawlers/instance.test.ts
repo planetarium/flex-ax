@@ -886,6 +886,55 @@ describe("crawlInstances incremental wiring", () => {
     assert.equal(storage._instances.length, 0);
   });
 
+  it("surfaces a structured error when readInstance throws during sweep, but keeps sweeping the rest", async () => {
+    // Sibling docs: d-fresh-1 reads cleanly, d-fresh-2's metadata read
+    // throws (e.g. EACCES). The sweep must record the failure on errors,
+    // not silently skip it, and still proceed to fetch d-fresh-1.
+    const within = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    function inst(id: string): WorkflowInstance {
+      return {
+        id,
+        documentNumber: id,
+        templateId: "t",
+        templateName: "t",
+        drafter: { id: "u", name: "n" },
+        draftedAt: within,
+        lastUpdatedAt: within,
+        signatureHash: "h",
+        status: "DONE",
+        approvalLine: [],
+        fields: [],
+        attachments: [],
+      };
+    }
+    const closedDocs = new Map<string, WorkflowInstance>([
+      ["d-fresh-1", inst("d-fresh-1")],
+      // d-fresh-2 omitted from closedDocs map; readInstance below throws for it
+    ]);
+    const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    const details = new Map<string, DetailResp>([
+      ["d-fresh-1", detailFor("d-fresh-1", within, "DONE")],
+    ]);
+    setupFetch(search, details);
+
+    const config: Config = { ...makeConfig(), closedSweepDays: 30 };
+    const storage = makeStorage({}, new Set(["d-fresh-1", "d-fresh-2"]), closedDocs);
+    storage.readInstance = async (id) => {
+      if (id === "d-fresh-2") throw new Error("EACCES: permission denied");
+      return closedDocs.get(id) ?? null;
+    };
+
+    const result = await crawlInstances(makeAuth(), config, null, storage, makeLogger());
+
+    assert.equal(result.closedSweepCount, 1, "d-fresh-1 must still be swept");
+    const readErr = result.errors.find((e) => e.target === "instance-closed-sweep:d-fresh-2");
+    assert.ok(readErr, "EACCES on d-fresh-2 must surface as a structured error");
+    assert.match(readErr.message, /EACCES/);
+  });
+
   it("skips closed-window sweep entirely when the list stage threw", async () => {
     // Permanent search 500 → listStageOk=false → sweep must not run.
     globalThis.fetch = (async (input: unknown) => {
@@ -1093,6 +1142,39 @@ describe("computeSignatureHash", () => {
       }),
     );
     assert.notEqual(a, b);
+  });
+
+  it("uses epoch-ms compare for the comment max-stamp, not lexicographic", () => {
+    // Lexicographically `2026-04-30T00:00:00.500Z` < `2026-04-30T00:00:00Z`
+    // (ms form sorts before the trailing-Z form), but the ms form is later
+    // in time. If the signature picked the lex-max it would silently equal
+    // a later run that adds the ms-form stamp on top of the trailing-Z one.
+    const baseline = computeSignatureHash(
+      detail({
+        comments: [
+          {
+            idHash: "c1",
+            writer: { idHash: "u", name: "n" },
+            type: "COMMENT",
+            createdAt: "2026-04-30T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    const withMsEdit = computeSignatureHash(
+      detail({
+        comments: [
+          {
+            idHash: "c1",
+            writer: { idHash: "u", name: "n" },
+            type: "COMMENT",
+            createdAt: "2026-04-30T00:00:00Z",
+            updatedAt: "2026-04-30T00:00:00.500Z",
+          },
+        ],
+      }),
+    );
+    assert.notEqual(baseline, withMsEdit);
   });
 
   it("does not depend on comment array order (sorted by idHash)", () => {

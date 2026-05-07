@@ -326,10 +326,30 @@ async function sweepRecentlyClosed(
     return 0;
   }
 
+  // 메타 로드를 병렬화. 인스턴스 파일이 많을수록 순차 read는 매 cycle
+  // O(N) I/O로 누적된다.
+  const eligibleIds = [...existingKeys].filter((id) => !collectedKeys.has(id));
+  const loaded = await pooledMap(eligibleIds, config.concurrency, async (id) => {
+    try {
+      return { id, inst: await storage.readInstance(id) };
+    } catch (err) {
+      // readInstance는 ENOENT/JSON parse 실패만 null로 swallow하고 나머지는
+      // throw하기로 약속한다(권한/디스크 등). 한 파일 실패가 sweep 전체를
+      // abort시키지 않게 하되, 운영자가 알 수 있도록 errors에는 push.
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error(`closed sweep: 인스턴스 메타 로드 실패: ${id}`, { error: message });
+      result.errors.push({
+        target: `instance-closed-sweep:${id}`,
+        phase: "list-existing",
+        message,
+        timestamp: nowISO(),
+      });
+      return { id, inst: null };
+    }
+  });
+
   const candidates: string[] = [];
-  for (const id of existingKeys) {
-    if (collectedKeys.has(id)) continue;
-    const inst = await storage.readInstance(id).catch(() => null);
+  for (const { inst, id } of loaded) {
     if (!inst) continue;
     if (!CLOSED_STATUSES.has(inst.status)) continue;
     if (!inst.lastUpdatedAt) continue;
@@ -728,8 +748,12 @@ export function computeSignatureHash(detail: DocumentDetailResponse): string {
   let commentMaxStamp: string | null = null;
   for (const c of comments) {
     const stamp = c.updatedAt ?? c.createdAt;
-    if (stamp && (!commentMaxStamp || stamp > commentMaxStamp)) {
-      commentMaxStamp = stamp;
+    // Lexicographic compare on ISO strings is unsafe across `...00Z` vs
+    // `...00.500Z` mixes — use the same epoch-ms helper the watermark
+    // commit logic uses, so signature stays stable across millisecond
+    // formatting drift.
+    if (isLaterIso(stamp, commentMaxStamp)) {
+      commentMaxStamp = stamp ?? null;
     }
   }
   const commentIds = comments.map((c) => c.idHash).sort().join(",");
