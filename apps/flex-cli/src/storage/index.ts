@@ -261,7 +261,15 @@ export function createStorageWriter(outputDir: string, catalogPath: string): Sto
       // 채워 옛 파일도 새 shape에 맞게 읽히도록 한다.
       const obj = parsed as Record<string, unknown>;
       if (obj.signatureHash === undefined) obj.signatureHash = null;
-      if (obj.lastUpdatedAt === undefined) obj.lastUpdatedAt = null;
+      if (obj.lastUpdatedAt === undefined) {
+        // PR #51 이전 인스턴스 JSON엔 top-level lastUpdatedAt이 없지만
+        // `_raw.document.updatedAt`은 보존되어 있다. 이걸 채우지 않으면
+        // closed-window sweep이 옛 데이터에 한해선 영영 후보를 못 만든다.
+        // import.ts도 같은 폴백 패턴(data.lastUpdatedAt ?? doc.updatedAt)을 쓴다.
+        const raw = obj._raw as { document?: { updatedAt?: unknown } } | undefined;
+        const rawUpdatedAt = raw?.document?.updatedAt;
+        obj.lastUpdatedAt = typeof rawUpdatedAt === "string" ? rawUpdatedAt : null;
+      }
       if (!Array.isArray(obj.attachments)) obj.attachments = [];
       if (!Array.isArray(obj.fields)) obj.fields = [];
       if (!Array.isArray(obj.approvalLine)) obj.approvalLine = [];

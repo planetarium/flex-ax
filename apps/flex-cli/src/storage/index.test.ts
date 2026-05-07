@@ -235,6 +235,34 @@ describe("createStorageWriter readInstance", () => {
     assert.equal(await writer.readInstance("bad"), null);
   });
 
+  it("backfills lastUpdatedAt from _raw.document.updatedAt when the top-level field is absent", async () => {
+    // Pre-PR#51 instance JSONs lack `lastUpdatedAt` at the top level
+    // but still carry `_raw.document.updatedAt`. closed-window sweep
+    // depends on the top-level field, so without backfill it would
+    // skip every legacy-shape doc forever.
+    const dir = await tmpStorageDir();
+    await mkdir(path.join(dir, "instances"));
+    const legacy = {
+      id: "old",
+      documentNumber: "old-1",
+      templateId: "t",
+      templateName: "t",
+      drafter: { id: "u", name: "n" },
+      draftedAt: "2025-01-01T00:00:00Z",
+      status: "DONE",
+      _raw: { document: { updatedAt: "2025-01-02T03:04:05Z" } },
+    };
+    await writeFile(
+      path.join(dir, "instances", "old.json"),
+      JSON.stringify(legacy),
+      "utf-8",
+    );
+    const writer = createStorageWriter(dir, path.join(dir, "catalog.json"));
+    const inst = await writer.readInstance("old");
+    assert.ok(inst);
+    assert.equal(inst.lastUpdatedAt, "2025-01-02T03:04:05Z");
+  });
+
   it("normalizes legacy on-disk shapes that pre-date later columns", async () => {
     // An instance JSON written before signatureHash / lastUpdatedAt /
     // attachments existed must still come back with those slots filled
