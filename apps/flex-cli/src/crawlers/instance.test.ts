@@ -702,6 +702,39 @@ describe("crawlInstances incremental wiring", () => {
     assert.deepEqual(result.missingKeys, []);
   });
 
+  it("withholds lastFullReconAt and missingKeys when the list stage throws", async () => {
+    // crawlSearchGroup throws after retries (search API is permanently
+    // failing). result.errors records an `instance-list` entry but
+    // failureCount stays at 0 because no doc-level work happened — the
+    // listStageOk flag must still block the full-recon outcomes.
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/user-boxes/search")) {
+        return new Response("server error", { status: 500 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const storage = makeStorage({}, new Set(["d-historical"]));
+    const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    assert.ok(
+      result.errors.some((e) => e.target === "instance-list"),
+      "list-stage error must be recorded",
+    );
+    assert.equal(result.failureCount, 0, "no doc-level failures occurred");
+    assert.equal(
+      storage._watermarks.approvalDocuments?.lastFullReconAt,
+      undefined,
+      "list-stage throw must not stamp lastFullReconAt",
+    );
+    assert.deepEqual(
+      result.missingKeys,
+      [],
+      "list-stage throw must withhold the missing diff (collectedKeys is partial)",
+    );
+  });
+
   it("does not stamp lastFullReconAt when a bootstrap full crawl had any failure", async () => {
     const search = new Map<string, SearchResp>([
       [

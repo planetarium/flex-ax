@@ -103,6 +103,11 @@ export async function crawlInstances(
     }
   }
 
+  // list-stage(검색 단계)가 try 끝까지 도달했는지 추적. crawlSearchGroup이
+  // 재시도 후에도 throw하면 catch에서 false로 전환. failureCount는 doc 단위
+  // 실패만 세므로 list 자체가 깨진 케이스를 별도로 표시해둬야 한다.
+  let listStageOk = true;
+
   try {
     for (const group of searchGroups) {
       const existing = domainState.groups[group.label];
@@ -160,6 +165,7 @@ export async function crawlInstances(
       });
     }
   } catch (error) {
+    listStageOk = false;
     logger.error("인스턴스 목록 수집 중 치명적 오류", {
       error: error instanceof Error ? error.message : String(error),
     });
@@ -171,21 +177,22 @@ export async function crawlInstances(
     });
   }
 
-  // 사실상 풀크롤로 돌았고 인스턴스 단계에 단 1건의 실패도 없었을 때만
-  // lastFullReconAt 갱신. 실패가 섞이면 "전체 recon 완료" 의미가 흐려지므로,
-  // 후속 cadence-기반 자동 풀크롤 트리거가 사고로 다음 실행을 건너뛰지 않도록
-  // 보수적으로 잠근다. 정당한 0건(워크스페이스에 문서 없음, 권한 없음 등)도
-  // 클린한 recon이므로 stamp 대상이다 — successCount는 게이트하지 않는다.
-  if (effectiveFull && result.failureCount === 0) {
+  // 사실상 풀크롤로 돌았고 list 단계가 끝까지 살아남았으며 인스턴스 단계에
+  // 단 1건의 실패도 없었을 때만 lastFullReconAt 갱신. 실패/list-throw가 섞이면
+  // "전체 recon 완료" 의미가 흐려지므로, 후속 cadence-기반 자동 풀크롤
+  // 트리거가 사고로 다음 실행을 건너뛰지 않도록 보수적으로 잠근다. 정당한
+  // 0건(워크스페이스에 문서 없음, 권한 없음 등)도 클린한 recon이므로 stamp
+  // 대상이다 — successCount는 게이트하지 않는다.
+  if (effectiveFull && listStageOk && result.failureCount === 0) {
     domainState.lastFullReconAt = nowISO();
   }
 
   // Full recon diff — 디스크에 있었지만 이번 실행 목록에서 사라진 docKey들.
   // 권한 회수, 삭제, flex 측 list 누락 등의 신호. 자동 tombstone은 후속.
-  // 단, 같은 그룹에 실패가 한 건이라도 있으면 그 docKey들이 단순히 detail
-  // 단계에서 못 가져와서 collectedKeys에 빠진 것일 수 있으니 missing 판정을
-  // 보류한다 (false positive 방지).
-  if (existingBeforeRun && result.failureCount === 0) {
+  // 단, 같은 그룹에 실패가 한 건이라도 있거나 list 단계가 throw로 조기
+  // 종료됐다면 collectedKeys가 부분 결과라 missing 판정을 보류한다
+  // (false positive 방지).
+  if (existingBeforeRun && listStageOk && result.failureCount === 0) {
     const missing: string[] = [];
     for (const key of existingBeforeRun) {
       if (!collectedKeys.has(key)) missing.push(key);
