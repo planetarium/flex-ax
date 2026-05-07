@@ -235,6 +235,20 @@ describe("createStorageWriter readInstance", () => {
     assert.equal(await writer.readInstance("bad"), null);
   });
 
+  it("returns null when the parsed object lacks required fields", async () => {
+    const dir = await tmpStorageDir();
+    await mkdir(path.join(dir, "instances"));
+    // missing id, status, drafter — type-laundering this into a
+    // WorkflowInstance would let downstream code fault on undefined.
+    await writeFile(
+      path.join(dir, "instances", "broken.json"),
+      JSON.stringify({ documentNumber: "x", templateId: "t" }),
+      "utf-8",
+    );
+    const writer = createStorageWriter(dir, path.join(dir, "catalog.json"));
+    assert.equal(await writer.readInstance("broken"), null);
+  });
+
   it("backfills lastUpdatedAt from _raw.document.updatedAt when the top-level field is absent", async () => {
     // Pre-PR#51 instance JSONs lack `lastUpdatedAt` at the top level
     // but still carry `_raw.document.updatedAt`. closed-window sweep

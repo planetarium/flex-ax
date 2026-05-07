@@ -925,6 +925,79 @@ describe("crawlInstances incremental wiring", () => {
     assert.equal(att.mimeType, "application/pdf", "mimeType must be carried over from prior");
   });
 
+  it("matches attachments by fileKey when prior _raw is available, not just fileName", async () => {
+    // Two attachments share the same fileName but have different
+    // fileKeys (a real-world case the codebase already handles via
+    // fileKey prefixing on disk). fileName-only merge would mis-pair
+    // their localPath metadata; fileKey merge keeps each attachment's
+    // metadata aligned to its own file.
+    const within = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    const prior: WorkflowInstance = {
+      id: "d-dup",
+      documentNumber: "d-dup",
+      templateId: "t",
+      templateName: "t",
+      drafter: { id: "u", name: "n" },
+      draftedAt: within,
+      lastUpdatedAt: within,
+      signatureHash: "old-hash",
+      status: "DONE",
+      approvalLine: [],
+      fields: [],
+      attachments: [
+        {
+          fileName: "report.pdf",
+          localPath: "/cache/d-dup/fk-A_report.pdf",
+          fileSize: 100,
+          mimeType: "application/pdf",
+        },
+        {
+          fileName: "report.pdf",
+          localPath: "/cache/d-dup/fk-B_report.pdf",
+          fileSize: 200,
+          mimeType: "application/pdf",
+        },
+      ],
+      _raw: {
+        document: {
+          attachments: [
+            { idHash: "att-A", file: { fileKey: "fk-A", fileName: "report.pdf", downloadUrl: "" } },
+            { idHash: "att-B", file: { fileKey: "fk-B", fileName: "report.pdf", downloadUrl: "" } },
+          ],
+        },
+      },
+    };
+    const closedDocs = new Map<string, WorkflowInstance>([["d-dup", prior]]);
+    const search = new Map<string, SearchResp>([
+      ["IN_PROGRESS", { documents: [], total: 0, hasNext: false }],
+      ["CANCELED|DECLINED|DONE", { documents: [], total: 0, hasNext: false }],
+    ]);
+    // Detail returns the same two attachments but in swapped order; if
+    // the merge were positional we'd silently mis-pair them. fileKey
+    // merge keeps each metadata bound to its own file.
+    const detailSwapped: DetailResp = { ...detailFor("d-dup", within, "DONE") };
+    detailSwapped.document = { ...detailSwapped.document };
+    (detailSwapped.document as unknown as {
+      attachments: Array<{ idHash: string; file: { fileKey: string; fileName: string; downloadUrl: string } }>;
+    }).attachments = [
+      { idHash: "att-B", file: { fileKey: "fk-B", fileName: "report.pdf", downloadUrl: "" } },
+      { idHash: "att-A", file: { fileKey: "fk-A", fileName: "report.pdf", downloadUrl: "" } },
+    ];
+    setupFetch(search, new Map([["d-dup", detailSwapped]]));
+
+    const config: Config = { ...makeConfig(), closedSweepDays: 30 };
+    const storage = makeStorage({}, new Set(["d-dup"]), closedDocs);
+    await crawlInstances(makeAuth(), config, null, storage, makeLogger());
+
+    const saved = storage._instances.find((i) => i.id === "d-dup");
+    assert.ok(saved);
+    // First attachment in the saved instance corresponds to fk-B (the
+    // first entry of the swapped detail response), so its fileSize
+    // must be 200 — fileName-only merge would have given 100.
+    assert.equal(saved.attachments[0].fileSize, 200, "fk-B metadata must follow fk-B");
+    assert.equal(saved.attachments[1].fileSize, 100, "fk-A metadata must follow fk-A");
+  });
+
   it("disables closed-window sweep when closedSweepDays=0", async () => {
     const within = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
     const closedDocs = new Map<string, WorkflowInstance>([

@@ -255,11 +255,15 @@ export function createStorageWriter(outputDir: string, catalogPath: string): Sto
         return null;
       }
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      const obj = parsed as Record<string, unknown>;
+      // 필수 필드 검증 — 누락/타입 불일치면 type-cast로 거짓말하지 말고 null
+      // 반환. 호출자(closed-window sweep 등)는 이미 null을 정상 처리한다.
+      if (typeof obj.id !== "string" || obj.id.length === 0) return null;
+      if (typeof obj.status !== "string") return null;
       // 정규화 — instance JSON이 디스크에 쓰일 당시 schema에 없던 필드는
       // undefined로 들어오는데, 캐스트만 하면 type system은 이를 모르고
       // downstream의 null 비교가 어긋난다. 누락 필드를 명시적인 기본값으로
       // 채워 옛 파일도 새 shape에 맞게 읽히도록 한다.
-      const obj = parsed as Record<string, unknown>;
       if (obj.signatureHash === undefined) obj.signatureHash = null;
       if (obj.lastUpdatedAt === undefined) {
         // PR #51 이전 인스턴스 JSON엔 top-level lastUpdatedAt이 없지만

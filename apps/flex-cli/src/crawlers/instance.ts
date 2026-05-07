@@ -384,13 +384,26 @@ async function sweepRecentlyClosed(
       // 댓글이 첨부 추가를 동반하는 케이스는 흔치 않고, 본문 변경은
       // updatedAt이 갱신되어 워터마크 search가 잡는다.
       // mapInstance는 detail 응답으로부터 fileName만 재구성할 수 있으므로,
-      // 기존에 저장된 instance가 보유한 localPath/fileSize/mimeType 같은
-      // 부가 메타는 fileName 매칭으로 이번 결과에 다시 채워준다 — 그렇지
-      // 않으면 sweep이 import 시 local_path를 NULL로 덮어쓰게 된다.
-      const priorByName = new Map(prior.attachments.map((a) => [a.fileName, a]));
+      // 기존 instance가 보유한 localPath/fileSize/mimeType 같은 부가 메타는
+      // fileKey 우선 매칭으로 이번 결과에 다시 채워준다. 같은 fileName 첨부
+      // 두 개가 다른 fileKey로 존재할 수 있으므로 fileName-only 매칭은
+      // mis-association 위험이 있다. fileKey가 어느 한쪽에라도 없을 때만
+      // fileName 폴백을 쓴다.
+      const priorRaw = prior._raw as
+        | { document?: { attachments?: Array<{ file?: { fileKey?: unknown } }> } }
+        | undefined;
+      const priorRawAtts = priorRaw?.document?.attachments ?? [];
+      const priorByFileKey = new Map<string, AttachmentInfo>();
+      const priorByFileName = new Map<string, AttachmentInfo>();
+      for (let i = 0; i < prior.attachments.length; i++) {
+        const meta = prior.attachments[i];
+        const fk = priorRawAtts[i]?.file?.fileKey;
+        if (typeof fk === "string") priorByFileKey.set(fk, meta);
+        priorByFileName.set(meta.fileName, meta);
+      }
       const attachments = (detail.document.attachments ?? []).map((att) => {
-        const fallback = priorByName.get(att.file.fileName);
-        return fallback ?? { fileName: att.file.fileName };
+        const byKey = att.file.fileKey ? priorByFileKey.get(att.file.fileKey) : undefined;
+        return byKey ?? priorByFileName.get(att.file.fileName) ?? { fileName: att.file.fileName };
       });
       const instance = mapInstance(detail, attachments);
       await storage.saveInstance(instance);
