@@ -276,10 +276,12 @@ async function crawlSearchGroup(
   let groupMaxUpdatedAt: string | null = null;
   // detail/attachment/save 단계별 cumulative ms. 동시 처리이므로 모두 더하면
   // wall clock보다 크게 나온다 — 그래서 평균(=mean)과 카운트도 함께 노출해
-  // "어디서 시간을 쓰는지"를 비교 가능하게 한다.
+  // "어디서 시간을 쓰는지"를 비교 가능하게 한다. 카운트는 단계별로 따로 세야
+  // 한다: detail 실패 시 attachments/save는 시작도 안 하므로, detailCount로
+  // 모든 mean을 나누면 attachments/save 평균이 저평가된다.
   const phaseTotals = { detailMs: 0, attachmentsMs: 0, saveMs: 0 };
   const phaseMaxes = { detailMs: 0, attachmentsMs: 0, saveMs: 0 };
-  let detailCount = 0;
+  const phaseCounts = { detail: 0, attachments: 0, save: 0 };
 
   while (hasMore) {
     const searchBody = {
@@ -368,12 +370,12 @@ async function crawlSearchGroup(
           const detailMs = Date.now() - detailStart;
           phaseTotals.detailMs += detailMs;
           if (detailMs > phaseMaxes.detailMs) phaseMaxes.detailMs = detailMs;
-          detailCount++;
+          phaseCounts.detail++;
         }
 
         currentPhase = "attachments";
         const attachStart = Date.now();
-        let attachments;
+        let attachments: AttachmentInfo[];
         try {
           attachments = await processAttachments(
             authCtx, config, docKey, detail.document.attachments ?? [], storage, logger,
@@ -382,6 +384,7 @@ async function crawlSearchGroup(
           const attachMs = Date.now() - attachStart;
           phaseTotals.attachmentsMs += attachMs;
           if (attachMs > phaseMaxes.attachmentsMs) phaseMaxes.attachmentsMs = attachMs;
+          phaseCounts.attachments++;
         }
 
         currentPhase = "save";
@@ -393,6 +396,7 @@ async function crawlSearchGroup(
           const saveMs = Date.now() - saveStart;
           phaseTotals.saveMs += saveMs;
           if (saveMs > phaseMaxes.saveMs) phaseMaxes.saveMs = saveMs;
+          phaseCounts.save++;
         }
 
         const observed = detail.document.updatedAt ?? null;
@@ -453,30 +457,33 @@ async function crawlSearchGroup(
     continuationToken = nextContinuationToken;
   }
 
-  // 단계별 소요시간 요약. detailCount=0 이면 평균이 의미 없으니 0으로 둔다.
-  // mean은 동시성에 영향을 받지 않는 per-document 비용. wall은 실제 그룹
-  // wall-clock. wall-mean 비율이 ~concurrency에 가까워야 detail이 진짜 병목.
+  // 단계별 소요시간 요약. mean은 해당 단계가 실제로 시작된 횟수로 나눈다 —
+  // detail 실패 시 attachments/save는 시작도 안 하므로 attachments/save mean을
+  // detailCount로 나누면 저평가된다. wall은 실제 그룹 wall-clock으로,
+  // sum/wall 비율이 ~concurrency에 가까워야 그 단계가 진짜 병목.
   const groupWallMs = Date.now() - groupStartedAt;
-  const detailMean = detailCount > 0 ? phaseTotals.detailMs / detailCount : 0;
-  const attachmentsMean = detailCount > 0 ? phaseTotals.attachmentsMs / detailCount : 0;
-  const saveMean = detailCount > 0 ? phaseTotals.saveMs / detailCount : 0;
+  const meanOf = (totalMs: number, count: number): number =>
+    count > 0 ? Math.round(totalMs / count) : 0;
   logger.info("인스턴스 그룹 단계별 소요시간", {
     group: group.label,
-    docs: detailCount,
+    docs: phaseCounts.detail,
     wallMs: groupWallMs,
     detail: {
+      count: phaseCounts.detail,
       totalMs: phaseTotals.detailMs,
-      meanMs: Math.round(detailMean),
+      meanMs: meanOf(phaseTotals.detailMs, phaseCounts.detail),
       maxMs: phaseMaxes.detailMs,
     },
     attachments: {
+      count: phaseCounts.attachments,
       totalMs: phaseTotals.attachmentsMs,
-      meanMs: Math.round(attachmentsMean),
+      meanMs: meanOf(phaseTotals.attachmentsMs, phaseCounts.attachments),
       maxMs: phaseMaxes.attachmentsMs,
     },
     save: {
+      count: phaseCounts.save,
       totalMs: phaseTotals.saveMs,
-      meanMs: Math.round(saveMean),
+      meanMs: meanOf(phaseTotals.saveMs, phaseCounts.save),
       maxMs: phaseMaxes.saveMs,
     },
     concurrency: config.concurrency,
