@@ -54,7 +54,7 @@ const COMMAND_HELP: Record<string, string> = {
   login: `Usage: flex-ax login [--gui] [--password-stdin]
 
 이메일/비밀번호를 등록합니다.
---gui 를 사용하면 브라우저 대신 플랫폼 기본 대화상자로 입력합니다.
+--gui 를 사용하면 터미널 프롬프트 대신 플랫폼 기본 대화상자로 입력합니다.
 --password-stdin 을 사용하면 stdin 파이프로 비밀번호를 주입할 수 있습니다.`,
   logout: `Usage: flex-ax logout [--gui]
 
