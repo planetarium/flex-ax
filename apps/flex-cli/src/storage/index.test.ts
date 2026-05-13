@@ -34,8 +34,16 @@ describe("normalizeWatermarkFile", () => {
       approvalDocuments: { groups: "not-an-object" },
       other: { groups: [1, 2] },
     });
-    assert.deepEqual(result.approvalDocuments, { groups: {}, lastFullReconAt: undefined });
-    assert.deepEqual(result.other, { groups: {}, lastFullReconAt: undefined });
+    assert.deepEqual(result.approvalDocuments, {
+      groups: {},
+      lastFullReconAt: undefined,
+      lastCrawledBoxScope: undefined,
+    });
+    assert.deepEqual(result.other, {
+      groups: {},
+      lastFullReconAt: undefined,
+      lastCrawledBoxScope: undefined,
+    });
   });
 
   it("drops malformed group entries while keeping well-formed siblings", () => {
@@ -179,10 +187,27 @@ describe("normalizeWatermarkFile", () => {
           },
         },
         lastFullReconAt: "2026-04-20T00:00:00Z",
+        lastCrawledBoxScope: "customer",
       },
     };
     const result = normalizeWatermarkFile(raw);
     assert.deepEqual(result, raw);
+  });
+
+  it("normalizes lastCrawledBoxScope: keeps customer/user, drops garbage", () => {
+    const result = normalizeWatermarkFile({
+      a: { groups: {}, lastCrawledBoxScope: "customer" },
+      b: { groups: {}, lastCrawledBoxScope: "user" },
+      c: { groups: {}, lastCrawledBoxScope: "admin" }, // not in enum
+      d: { groups: {}, lastCrawledBoxScope: 42 },
+      e: { groups: {} }, // absent
+    });
+    assert.equal(result.a!.lastCrawledBoxScope, "customer");
+    assert.equal(result.b!.lastCrawledBoxScope, "user");
+    // 손상된 값은 undefined로 떨어져 다음 run에서 scope mismatch 경로로 자가복구.
+    assert.equal(result.c!.lastCrawledBoxScope, undefined);
+    assert.equal(result.d!.lastCrawledBoxScope, undefined);
+    assert.equal(result.e!.lastCrawledBoxScope, undefined);
   });
 });
 

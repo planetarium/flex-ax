@@ -34,6 +34,19 @@ const MAX_OVERLAP_DAYS = 365;
 export interface WatermarkDomainState {
   groups: Record<string, WatermarkGroupState>;
   lastFullReconAt?: string;
+  /**
+   * 직전 성공 run이 사용한 검색 스코프. approval-documents 도메인 한정 — 다른
+   * 도메인은 이 필드를 사용하지 않는다.
+   *
+   * 다음 run에서 결정된 스코프와 비교해, 다르거나 비어 있으면 그 run을
+   * effectiveFull로 강제한다. 핵심 사용 케이스 두 가지:
+   *   1. user-boxes 시절 워터마크를 가진 환경이 customer-boxes로 업그레이드된
+   *      직후: 디스크에 이 필드가 없음 → 첫 run 자동 full → 백필.
+   *      운영자가 `--mode=full`을 까먹어도 같은 결과.
+   *   2. 관리자 권한이 회수/부여되어 스코프가 user↔customer로 바뀌는 경우도
+   *      같은 메커니즘으로 자가복구.
+   */
+  lastCrawledBoxScope?: "customer" | "user";
 }
 
 export interface WatermarkFile {
@@ -165,9 +178,17 @@ export function normalizeWatermarkFile(
       }
     }
     const lastFullReconAt = (rawState as Record<string, unknown>).lastFullReconAt;
+    const lastCrawledBoxScope = (rawState as Record<string, unknown>).lastCrawledBoxScope;
     out[domain] = {
       groups,
       lastFullReconAt: typeof lastFullReconAt === "string" ? lastFullReconAt : undefined,
+      // "customer"/"user" 외 값은 손상으로 간주하고 undefined로 처리한다.
+      // undefined가 되면 다음 run에서 scope mismatch가 일어나 자동으로 full
+      // recon이 트리거되므로, 손상된 필드는 자가복구된다.
+      lastCrawledBoxScope:
+        lastCrawledBoxScope === "customer" || lastCrawledBoxScope === "user"
+          ? lastCrawledBoxScope
+          : undefined,
     };
   }
   return out;

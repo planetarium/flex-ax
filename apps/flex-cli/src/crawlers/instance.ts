@@ -109,42 +109,19 @@ export async function crawlInstances(
   const watermarks = await storage.loadWatermarks();
   const domainState: WatermarkDomainState =
     watermarks[APPROVAL_DOCUMENTS_DOMAIN] ?? { groups: {} };
-  // incremental-eligible 그룹들에 워터마크가 모두 비어 있다면 부트스트랩 —
-  // 사실상 풀크롤. 비-eligible 그룹(IN_PROGRESS sweep)은 어차피 매 실행
-  // 전수 fetch라 effectiveFull 판정에서 제외한다.
-  const noWatermarks = searchGroups
-    .filter((g) => g.incrementalEligible)
-    .every((g) => !domainState.groups[g.label]?.lastUpdatedAt);
-  const effectiveFull = mode === "full" || noWatermarks;
-  if (mode === "incremental" && noWatermarks) {
-    logger.info("워터마크 없음 — bootstrap 풀크롤로 진행");
-  }
   // to 날짜는 그룹 진입 전에 한 번 캡처해서 페이지/그룹 간 일관되게 사용.
   const todayKst = toKstDate(new Date());
 
-  // full reconciliation diff: effectiveFull일 때만 시작 시점의 디스크 상
-  // docKey 집합을 캡처해두고, 종료 후 collectedKeys와 차집합을 missing
-  // 후보로 보고서에 노출. 자동 tombstone은 별도 트랙.
+  // effectiveFull / existingBeforeRun은 검색 스코프(`boxScope`) 결정 후에야
+  // 확정할 수 있다 (스코프 변경 시 자동 풀크롤 트리거 때문). 따라서 try 안에서
+  // 결정하고, 외부에서는 fallback 의미의 디폴트만 잡아둔다.
+  //   - effectiveFull: scope probe가 throw해서 try에 진입하기 전에 catch로
+  //     떨어진 경우, "정상 진행 못함"이므로 false로 둔다. listStageOk=false도
+  //     함께 잡혀 lastFullReconAt이 갱신되지 않는다.
+  //   - existingBeforeRun: null이면 missing diff 자체를 생략 — 부분 결과에서
+  //     missing 후보를 만들면 false positive 폭증.
+  let effectiveFull = mode === "full";
   let existingBeforeRun: Set<string> | null = null;
-  if (effectiveFull) {
-    try {
-      existingBeforeRun = await storage.listExistingInstanceKeys();
-      logger.info("full recon — 기존 docKey 스냅샷 캡처", {
-        count: existingBeforeRun.size,
-      });
-    } catch (err) {
-      // 스냅샷 실패는 missing diff만 비우고 크롤은 계속 진행 (비치명적).
-      logger.error("기존 docKey 스냅샷 실패 — missing diff 생략", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      result.errors.push({
-        target: "instance-recon",
-        phase: "list-existing",
-        message: err instanceof Error ? err.message : String(err),
-        timestamp: nowISO(),
-      });
-    }
-  }
 
   // list-stage(검색 단계)가 try 끝까지 도달했는지 추적. crawlSearchGroup이
   // 재시도 후에도 throw하면 catch에서 false로 전환. failureCount는 doc 단위
@@ -160,6 +137,55 @@ export async function crawlInstances(
     const resolved = await resolveBoxScope(authCtx, config, logger, result);
     boxScope = resolved.scope;
     searchUrl = resolved.url;
+
+    // incremental-eligible 그룹들에 워터마크가 모두 비어 있다면 부트스트랩 —
+    // 사실상 풀크롤. 비-eligible 그룹(IN_PROGRESS sweep)은 어차피 매 실행
+    // 전수 fetch라 effectiveFull 판정에서 제외한다.
+    const noWatermarks = searchGroups
+      .filter((g) => g.incrementalEligible)
+      .every((g) => !domainState.groups[g.label]?.lastUpdatedAt);
+    // 스코프가 직전 성공 run과 다르면(또는 처음 보는 필드면) 이번 사이클을
+    // 풀크롤로 강제. 핵심 케이스: user-boxes 시절 워터마크가 있는 환경이
+    // customer-boxes로 업그레이드된 직후, 운영자가 `--mode=full`을 명시적으로
+    // 주지 않아도 자동으로 백필이 일어난다 (planetarium/reflex#49 후속).
+    // 이미 부트스트랩이거나 풀모드면 굳이 mismatch 로그를 띄우지 않는다.
+    const scopeMismatch =
+      !noWatermarks && domainState.lastCrawledBoxScope !== boxScope;
+    if (mode === "full") {
+      // 명시적 풀모드 — effectiveFull은 이미 true로 초기화됨, 추가 로그 없음.
+    } else if (noWatermarks) {
+      effectiveFull = true;
+      logger.info("워터마크 없음 — bootstrap 풀크롤로 진행");
+    } else if (scopeMismatch) {
+      effectiveFull = true;
+      logger.info("결재 문서 검색 스코프 변경 감지 — 이번 사이클은 풀크롤로 진행", {
+        previousScope: domainState.lastCrawledBoxScope ?? null,
+        currentScope: boxScope,
+      });
+    }
+
+    // full reconciliation diff: effectiveFull일 때만 시작 시점의 디스크 상
+    // docKey 집합을 캡처해두고, 종료 후 collectedKeys와 차집합을 missing
+    // 후보로 보고서에 노출. 자동 tombstone은 별도 트랙.
+    if (effectiveFull) {
+      try {
+        existingBeforeRun = await storage.listExistingInstanceKeys();
+        logger.info("full recon — 기존 docKey 스냅샷 캡처", {
+          count: existingBeforeRun.size,
+        });
+      } catch (err) {
+        // 스냅샷 실패는 missing diff만 비우고 크롤은 계속 진행 (비치명적).
+        logger.error("기존 docKey 스냅샷 실패 — missing diff 생략", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        result.errors.push({
+          target: "instance-recon",
+          phase: "list-existing",
+          message: err instanceof Error ? err.message : String(err),
+          timestamp: nowISO(),
+        });
+      }
+    }
 
     for (const group of searchGroups) {
       const existing = domainState.groups[group.label];
@@ -258,6 +284,15 @@ export async function crawlInstances(
   // 대상이다 — successCount는 게이트하지 않는다.
   if (effectiveFull && listStageOk && result.failureCount === 0) {
     domainState.lastFullReconAt = nowISO();
+  }
+
+  // 직전 성공 run의 스코프를 기록한다. listStageOk && failureCount===0 일 때만
+  // 박는다 — 부분 실패 cycle에서 갱신하면 다음 run이 "스코프 일치"로 오판해
+  // 자동 풀크롤 트리거를 놓칠 수 있다 (자가복구 경로가 막힘). effectiveFull은
+  // 게이트하지 않는다 — incremental 사이클에서도 "여전히 같은 스코프"라는
+  // 사실은 확정할 가치가 있다.
+  if (listStageOk && result.failureCount === 0) {
+    domainState.lastCrawledBoxScope = boxScope;
   }
 
   // Full recon diff — 디스크에 있었지만 이번 실행 목록에서 사라진 docKey들.
