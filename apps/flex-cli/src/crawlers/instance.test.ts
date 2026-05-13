@@ -1589,6 +1589,41 @@ describe("crawlInstances box scope resolution", () => {
     );
   });
 
+  it("scope probe retries on 429 (rate-limited)", async () => {
+    // 429는 일시적 throttle 신호 → retry 허용. group search와 동일 동작.
+    let probeCalls = 0;
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/customer-boxes/search")) {
+        probeCalls++;
+        if (probeCalls === 1) {
+          return new Response("rate limited", {
+            status: 429,
+            // retry-after 0 — 테스트 속도 위해.
+            headers: { "retry-after": "0" },
+          });
+        }
+        return new Response(JSON.stringify({ documents: [], total: 0, hasNext: false }), {
+          status: 200,
+        });
+      }
+      return new Response("nf", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await crawlInstances(
+      makeAuth(),
+      { ...makeConfig(), maxRetries: 2, requestDelayMs: 0 },
+      null,
+      makeStorage(),
+      makeLogger(),
+    );
+
+    assert.equal(result.boxScope, "customer", "must succeed after 429 retry");
+    assert.ok(probeCalls >= 2, `429 must trigger retry, called ${probeCalls} times`);
+    // 429 retry 1회가 retries 카운터에 잡혀야 한다.
+    assert.equal(result.retries, 1);
+  });
+
   it("scope probe does not retry on 4xx (e.g. 401 unauthorized) — fast-fail to list-stage error", async () => {
     // 4xx는 영구 실패로 간주해 backoff 낭비를 피한다. 401은 403과 달리 fallback
     // 대상도 아니므로 그대로 list-stage catch로 떨어져 listStageOk=false.

@@ -387,13 +387,20 @@ async function resolveBoxScope(
   const probeUrl = `${customerUrl}?size=1&sortType=LAST_UPDATED_AT&direction=DESC`;
   try {
     // 그룹 search와 동일한 회복력을 갖도록 withRetry로 감싼다 — 그렇지 않으면
-    // 일시적 429/5xx/네트워크 블립이 list-stage 전체를 죽인다. 단 403은
-    // "권한 없음 = user-boxes로 폴백"의 신호로 사용하므로 재시도 대상에서
-    // 제외 — `shouldRetry`로 4xx 전부를 차단해 4xx류는 단발 throw로 끝낸다.
+    // 일시적 429/5xx/네트워크 블립이 list-stage 전체를 죽인다. 재시도 정책:
+    //   - 429: rate-limited → withRetry가 `retryAfterMs`를 존중하며 재시도.
+    //   - 5xx, 네트워크/파싱 에러: 재시도.
+    //   - 그 외 4xx (400/401/403/404): 영구 실패 — 재시도 무의미하므로 fast-fail.
+    //     특히 403은 "권한 없음 = user-boxes로 폴백"의 신호로 사용된다.
     await withRetry(() => flexPost(authCtx, probeUrl, probeBody), {
       maxRetries: config.maxRetries,
       delayMs: config.requestDelayMs,
-      shouldRetry: (e) => !(e instanceof FlexHttpError && e.status >= 400 && e.status < 500),
+      shouldRetry: (e) => {
+        if (!(e instanceof FlexHttpError)) return true;
+        if (e.status === 429) return true;
+        if (e.status >= 400 && e.status < 500) return false;
+        return true;
+      },
       onRetry: () => result.retries++,
     });
     logger.info("결재 문서 검색 스코프: customer (워크스페이스 전체)");
