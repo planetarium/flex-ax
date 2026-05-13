@@ -1478,6 +1478,9 @@ describe("crawlInstances box scope resolution", () => {
     assert.equal(wm?.lastFullReconAt, undefined);
     // 스코프도 안 박혀야 함 (실패 cycle이므로 다음 run에서 자가복구 가능).
     assert.equal(wm?.lastCrawledBoxScope, undefined);
+    // 반환값의 boxScope도 undefined여야 한다 — 운영자가 보고서에서 "어느
+    // 스코프로 돌았다"고 오판하지 않게.
+    assert.equal(result.boxScope, undefined);
   });
 
   it("scope probe retries on transient 5xx and recovers", async () => {
@@ -1610,6 +1613,8 @@ describe("crawlInstances box scope resolution", () => {
     assert.equal(probeCalls, 1, "4xx must not be retried");
     // listStageOk=false 경로 — instance-list 에러 1건.
     assert.ok(result.errors.find((e) => e.target === "instance-list"));
+    // 401은 fallback 대상도 아니므로 scope가 결정 안 됨 → undefined.
+    assert.equal(result.boxScope, undefined);
   });
 });
 

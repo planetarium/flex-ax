@@ -60,7 +60,14 @@ export async function crawlInstances(
     collectedKeys: Set<string>;
     missingKeys: string[];
     closedSweepCount: number;
-    boxScope: BoxScope;
+    /**
+     * 이번 run이 실제로 사용한 검색 스코프. scope probe가 throw해서 그룹 루프에
+     * 진입조차 못 한 경우 undefined — "어느 스코프로 돌았다"고 잘못 보고하지
+     * 않기 위함. 호출자가 보고서/자동화에서 이 값만 보고 분기하더라도 안전하다.
+     * 실패 경위는 `result.errors`의 `instance-list`/`instance-scope` 항목에서
+     * 확인 가능.
+     */
+    boxScope: BoxScope | undefined;
   }
 > {
   const startTime = Date.now();
@@ -74,13 +81,14 @@ export async function crawlInstances(
 
   logger.info("인스턴스(결재 문서) 수집 시작", { mode });
 
-  // 스코프 결정은 list-stage try 안에서 수행한다 (아래 참조). 여기서는 catch
-  // 경로에서도 의미를 갖는 안전한 디폴트만 박아둔다 — list-stage가 throw해도
-  // 반환 객체의 boxScope는 undefined가 아니라 "customer"가 되어 운영자가
-  // "스코프 결정 전에 죽음"을 한눈에 식별할 수 있다 (errors에 스코프 probe
-  // 실패가 함께 기록되므로 모집단이 좁아진 fallback 케이스와 헷갈리지 않는다).
-  let boxScope: BoxScope = "customer";
-  let searchUrl = `${config.flexBaseUrl}${CUSTOMER_BOXES_SEARCH_PATH}`;
+  // boxScope는 scope probe가 성공한 뒤에만 채워진다 — probe가 throw해서 그룹
+  // 루프에 진입조차 못 한 경우에는 undefined로 남아 보고서에 그대로 흘러간다.
+  // "운영자가 scope 필드만 보고도 어느 스코프로 돌았는지 분명히 알 수 있어야
+  // 한다"는 원칙: 5xx/401 등으로 실패한 cycle에 임의의 디폴트("customer")를
+  // 박아두면 자동화/대시보드가 "customer로 정상 동작 중"이라고 오판할 위험.
+  // searchUrl은 try 안에서만 실제로 사용되므로 catch 경로에서의 값은 의미 없음.
+  let boxScope: BoxScope | undefined;
+  let searchUrl = "";
   const detailBase = resolveUrl(
     config.flexBaseUrl, catalog, "instance-detail",
     "/api/v3/approval-document/approval-documents",
