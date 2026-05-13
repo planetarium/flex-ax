@@ -23,6 +23,20 @@ interface CapturedFetch {
   body: unknown;
 }
 
+/**
+ * 그룹 단위 실제 search 호출만 골라내는 헬퍼. crawlInstances는 시작 시 스코프
+ * 결정을 위해 customer-boxes에 `size=1` probe를 한 번 쏘는데, 테스트에서
+ * "이번 실행이 보낸 search call들" 같은 assertion에는 이 probe를 제외하고
+ * 봐야 한다.
+ */
+function isRealSearchCall(c: { url: string }): boolean {
+  if (!c.url.includes("/customer-boxes/search") && !c.url.includes("/user-boxes/search")) {
+    return false;
+  }
+  // 스코프 probe는 query에 size=1, 실제 그룹 search는 searchPageSize(테스트 기본 100).
+  return !/[?&]size=1(?:&|$)/.test(c.url);
+}
+
 const ORIGINAL_FETCH = globalThis.fetch;
 
 function makeAuth(): AuthContext {
@@ -162,7 +176,7 @@ function setupFetch(
     const body = init?.body ? JSON.parse(init.body) : null;
     calls.push({ url, method, body });
 
-    if (url.includes("/user-boxes/search")) {
+    if (url.includes("/customer-boxes/search") || url.includes("/user-boxes/search")) {
       const statuses: string[] = body?.filter?.statuses ?? [];
       const key = statuses.sort().join("|");
       const resp = searchResponses.get(key);
@@ -217,7 +231,7 @@ describe("crawlInstances incremental wiring", () => {
     const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
 
     assert.equal(result.successCount, 2);
-    const searchCalls = calls.filter((c) => c.url.includes("/user-boxes/search"));
+    const searchCalls = calls.filter((c) => isRealSearchCall(c));
     for (const c of searchCalls) {
       const filter = (c.body as { filter: Record<string, unknown> }).filter;
       assert.ok(
@@ -271,7 +285,7 @@ describe("crawlInstances incremental wiring", () => {
     // file (e.g. left over from a pre-policy run).
     const inProgressCall = calls.find(
       (c) =>
-        c.url.includes("/user-boxes/search") &&
+        isRealSearchCall(c) &&
         Array.isArray((c.body as { filter: { statuses: string[] } }).filter.statuses) &&
         (c.body as { filter: { statuses: string[] } }).filter.statuses[0] === "IN_PROGRESS",
     );
@@ -284,7 +298,7 @@ describe("crawlInstances incremental wiring", () => {
 
     const doneCall = calls.find(
       (c) =>
-        c.url.includes("/user-boxes/search") &&
+        isRealSearchCall(c) &&
         (c.body as { filter: { statuses: string[] } }).filter.statuses.includes("DONE"),
     );
     assert.ok(doneCall);
@@ -323,7 +337,7 @@ describe("crawlInstances incremental wiring", () => {
       "full",
     );
 
-    const searchCalls = calls.filter((c) => c.url.includes("/user-boxes/search"));
+    const searchCalls = calls.filter((c) => isRealSearchCall(c));
     for (const c of searchCalls) {
       const filter = (c.body as { filter: Record<string, unknown> }).filter;
       assert.ok(
@@ -410,7 +424,7 @@ describe("crawlInstances incremental wiring", () => {
     assert.equal(result.failureCount, 0);
     const doneCall = calls.find(
       (c) =>
-        c.url.includes("/user-boxes/search") &&
+        isRealSearchCall(c) &&
         (c.body as { filter: { statuses: string[] } }).filter.statuses.includes("DONE"),
     );
     assert.ok(doneCall);
@@ -462,7 +476,7 @@ describe("crawlInstances incremental wiring", () => {
     // lastUpdatedDateRange in the done search.
     const doneCall = calls.find(
       (c) =>
-        c.url.includes("/user-boxes/search") &&
+        isRealSearchCall(c) &&
         (c.body as { filter: { statuses: string[] } }).filter.statuses.includes("DONE"),
     );
     assert.ok(doneCall);
@@ -697,7 +711,7 @@ describe("crawlInstances incremental wiring", () => {
     // listStageOk flag must still block the full-recon outcomes.
     globalThis.fetch = (async (input: unknown) => {
       const url = String(input);
-      if (url.includes("/user-boxes/search")) {
+      if (url.includes("/customer-boxes/search") || url.includes("/user-boxes/search")) {
         return new Response("server error", { status: 500 });
       }
       return new Response("not found", { status: 404 });
@@ -1086,7 +1100,7 @@ describe("crawlInstances incremental wiring", () => {
     // Permanent search 500 → listStageOk=false → sweep must not run.
     globalThis.fetch = (async (input: unknown) => {
       const url = String(input);
-      if (url.includes("/user-boxes/search")) {
+      if (url.includes("/customer-boxes/search") || url.includes("/user-boxes/search")) {
         return new Response("server error", { status: 500 });
       }
       return new Response("not found", { status: 404 });
@@ -1154,7 +1168,7 @@ describe("crawlInstances incremental wiring", () => {
 
     const inProgressCall = calls.find(
       (c) =>
-        c.url.includes("/user-boxes/search") &&
+        isRealSearchCall(c) &&
         (c.body as { filter: { statuses: string[] } }).filter.statuses[0] === "IN_PROGRESS",
     );
     assert.ok(inProgressCall);
@@ -1341,5 +1355,115 @@ describe("computeSignatureHash", () => {
       computeSignatureHash(detail({ comments: [c1, c2] })),
       computeSignatureHash(detail({ comments: [c2, c1] })),
     );
+  });
+});
+
+describe("crawlInstances box scope resolution", () => {
+  beforeEach(() => {
+    globalThis.fetch = ORIGINAL_FETCH;
+  });
+  afterEach(() => {
+    globalThis.fetch = ORIGINAL_FETCH;
+  });
+
+  it("uses customer-boxes when scope probe returns 200", async () => {
+    const calls: CapturedFetch[] = [];
+    globalThis.fetch = (async (input: unknown, init?: { method?: string; body?: string }) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ url, method, body: init?.body ? JSON.parse(init.body) : null });
+      if (url.includes("/customer-boxes/search") || url.includes("/user-boxes/search")) {
+        return new Response(JSON.stringify({ documents: [], total: 0, hasNext: false }), {
+          status: 200,
+        });
+      }
+      return new Response("nf", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await crawlInstances(
+      makeAuth(), makeConfig(), null, makeStorage(), makeLogger(),
+    );
+
+    assert.equal(result.boxScope, "customer");
+    const realSearches = calls.filter(isRealSearchCall);
+    assert.ok(realSearches.length > 0, "must have made at least one real search call");
+    for (const c of realSearches) {
+      assert.ok(
+        c.url.includes("/customer-boxes/search"),
+        `real search must hit customer-boxes, got ${c.url}`,
+      );
+    }
+    // 403 폴백 분기는 트리거되지 않아야 하므로 scope-detect 에러도 없어야 한다.
+    assert.equal(
+      result.errors.find((e) => e.target === "instance-scope"),
+      undefined,
+    );
+  });
+
+  it("falls back to user-boxes when customer-boxes probe returns 403", async () => {
+    const calls: CapturedFetch[] = [];
+    globalThis.fetch = (async (input: unknown, init?: { method?: string; body?: string }) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ url, method, body: init?.body ? JSON.parse(init.body) : null });
+      if (url.includes("/customer-boxes/search")) {
+        return new Response(
+          JSON.stringify({ status: 403, code: "PERM_403_000", message: "권한이 없습니다" }),
+          { status: 403 },
+        );
+      }
+      if (url.includes("/user-boxes/search")) {
+        return new Response(JSON.stringify({ documents: [], total: 0, hasNext: false }), {
+          status: 200,
+        });
+      }
+      return new Response("nf", { status: 404 });
+    }) as typeof fetch;
+
+    const storage = makeStorage();
+    const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    assert.equal(result.boxScope, "user");
+    // 폴백 후 실제 그룹 search는 모두 user-boxes로 가야 한다.
+    const realSearches = calls.filter(isRealSearchCall);
+    assert.ok(realSearches.length > 0, "must have made at least one real search call");
+    for (const c of realSearches) {
+      assert.ok(
+        c.url.includes("/user-boxes/search"),
+        `after fallback, real search must hit user-boxes, got ${c.url}`,
+      );
+    }
+    // 폴백은 silent하지 않아야 한다 — result.errors에 scope-detect 항목.
+    const scopeErr = result.errors.find((e) => e.target === "instance-scope");
+    assert.ok(scopeErr, "fallback must push an instance-scope error for visibility");
+    assert.equal(scopeErr?.phase, "scope-detect");
+    // 폴백 자체는 failure로 안 카운트해서 워터마크 갱신을 막지 않는다 — 운영자가
+    // 비관리자 계정으로 의도적으로 user-boxes 모집단을 받고 있을 수 있다.
+    assert.equal(result.failureCount, 0);
+  });
+
+  it("non-403 probe failure aborts the list stage (listStageOk=false path)", async () => {
+    const calls: CapturedFetch[] = [];
+    globalThis.fetch = (async (input: unknown, init?: { method?: string; body?: string }) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ url, method, body: init?.body ? JSON.parse(init.body) : null });
+      if (url.includes("/customer-boxes/search")) {
+        return new Response("server error", { status: 500 });
+      }
+      return new Response("nf", { status: 404 });
+    }) as typeof fetch;
+
+    const storage = makeStorage();
+    const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    // probe가 500으로 throw → list-stage catch로 떨어져 instance-list 에러 1건.
+    const listErr = result.errors.find((e) => e.target === "instance-list");
+    assert.ok(listErr, "non-403 probe failure must be recorded as a list-stage error");
+    // 그룹 루프에 진입하기 전이라 그룹 워터마크도 lastFullReconAt도 안 박혀야 한다.
+    // (domain entry 자체는 빈 groups로 저장되지만 의미 있는 진행은 없음.)
+    const wm = storage._watermarks.approvalDocuments;
+    assert.deepEqual(wm?.groups ?? {}, {});
+    assert.equal(wm?.lastFullReconAt, undefined);
   });
 });

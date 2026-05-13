@@ -54,6 +54,15 @@ export interface CrawlReport {
    * 누락 등의 신호. 자동 tombstone은 별도 트랙. incremental 실행에선 비워둔다.
    */
   instancesMissing?: string[];
+  /**
+   * 이번 실행이 사용한 결재 문서 검색 스코프.
+   *  - "customer": `/customer-boxes/search` — 워크스페이스 전체.
+   *  - "user":     `/user-boxes/search`     — 로그인 계정 관여 문서만.
+   * "user"로 떨어지면 관리자 권한 부재로 모집단이 좁아진 상태이므로 운영자는
+   * `totalErrors`에서 `instance-scope` 항목을 함께 확인해야 한다.
+   * 인스턴스 단계가 시작 전에 실패하면 미정의일 수 있다.
+   */
+  instancesBoxScope?: "customer" | "user";
   totalErrors: CrawlError[];
 }
 

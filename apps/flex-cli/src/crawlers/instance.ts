@@ -13,6 +13,7 @@ import type { ApprovalStep, AttachmentInfo, FieldValue } from "../types/common.j
 import {
   type CrawlResult,
   emptyCrawlResult,
+  FlexHttpError,
   nowISO,
   isLaterIso,
   toKstDate,
@@ -27,6 +28,20 @@ export type CrawlMode = "incremental" | "full";
 
 const APPROVAL_DOCUMENTS_DOMAIN = "approvalDocuments";
 const MS_PER_DAY = 86_400_000;
+
+/**
+ * 결재 문서 검색 스코프.
+ *  - "customer": `/customer-boxes/search` — 워크스페이스 전체. 관리자 권한 필요.
+ *  - "user":     `/user-boxes/search`     — 로그인 계정이 작성자/결재자/참조자로
+ *                                          포함된 문서만 (작성함/결재함/참조함/즐겨찾기).
+ * 디폴트는 "customer"로 시도하고 403이 떨어지면 "user"로 폴백한다.
+ * planetarium/reflex#49 참조 — 비-customer 스코프에서 큰 워크스페이스는
+ * 워크스페이스 모집단의 ~30% 수준만 보인다.
+ */
+export type BoxScope = "customer" | "user";
+
+const CUSTOMER_BOXES_SEARCH_PATH = "/action/v3/approval-document/customer-boxes/search";
+const USER_BOXES_SEARCH_PATH = "/action/v3/approval-document/user-boxes/search";
 
 interface DateRange {
   from: string;
@@ -45,6 +60,7 @@ export async function crawlInstances(
     collectedKeys: Set<string>;
     missingKeys: string[];
     closedSweepCount: number;
+    boxScope: BoxScope;
   }
 > {
   const startTime = Date.now();
@@ -58,10 +74,13 @@ export async function crawlInstances(
 
   logger.info("인스턴스(결재 문서) 수집 시작", { mode });
 
-  const searchUrl = resolveUrl(
-    config.flexBaseUrl, catalog, "instance-search",
-    "/action/v3/approval-document/user-boxes/search",
-  );
+  // 스코프 결정은 list-stage try 안에서 수행한다 (아래 참조). 여기서는 catch
+  // 경로에서도 의미를 갖는 안전한 디폴트만 박아둔다 — list-stage가 throw해도
+  // 반환 객체의 boxScope는 undefined가 아니라 "customer"가 되어 운영자가
+  // "스코프 결정 전에 죽음"을 한눈에 식별할 수 있다 (errors에 스코프 probe
+  // 실패가 함께 기록되므로 모집단이 좁아진 fallback 케이스와 헷갈리지 않는다).
+  let boxScope: BoxScope = "customer";
+  let searchUrl = `${config.flexBaseUrl}${CUSTOMER_BOXES_SEARCH_PATH}`;
   const detailBase = resolveUrl(
     config.flexBaseUrl, catalog, "instance-detail",
     "/api/v3/approval-document/approval-documents",
@@ -133,6 +152,15 @@ export async function crawlInstances(
   let listStageOk = true;
 
   try {
+    // 검색 스코프 probe — customer-boxes(워크스페이스 전체)를 우선 시도하고
+    // 403(관리자 권한 부재)이면 user-boxes로 폴백. 폴백은 silent하지 않게
+    // warn 로그 + result.errors push로 운영자에게 노출한다. 403 외 에러
+    // (네트워크/5xx 등)는 그대로 throw → 아래 catch가 listStageOk=false로
+    // 떨어뜨려 워터마크/lastFullReconAt 갱신을 보류한다.
+    const resolved = await resolveBoxScope(authCtx, config, logger, result);
+    boxScope = resolved.scope;
+    searchUrl = resolved.url;
+
     for (const group of searchGroups) {
       const existing = domainState.groups[group.label];
       // incrementalEligible=false 그룹은 워터마크/풀모드 무관 항상 전수 sweep.
@@ -270,7 +298,61 @@ export async function crawlInstances(
 
   result.durationMs = Date.now() - startTime;
   logger.info(`\n인스턴스 수집 완료: 성공 ${result.successCount}, 실패 ${result.failureCount}`);
-  return { ...result, collectedKeys, missingKeys, closedSweepCount };
+  return { ...result, collectedKeys, missingKeys, closedSweepCount, boxScope };
+}
+
+/**
+ * 검색 스코프(customer vs user)를 한 번의 size=1 probe로 결정한다.
+ * customer-boxes는 관리자 권한이 있어야 200을 받고, 권한 없으면 403이 떨어진다.
+ * 비관리자 계정에서도 크롤이 멈추지 않도록 user-boxes로 폴백하되, 운영자가
+ * 알 수 있게 warn + result.errors에 기록 — silent하게 모집단이 줄어드는 것
+ * 방지가 목적이다(planetarium/reflex#49 참조).
+ *
+ * 403 외의 에러는 라우팅·서비스 장애일 수 있으므로 그대로 throw하여 호출자
+ * 레벨의 list-stage catch가 처리하게 한다 (이때 listStageOk=false로 떨어져
+ * watermark/lastFullReconAt 갱신이 보류된다).
+ */
+async function resolveBoxScope(
+  authCtx: AuthContext,
+  config: Config,
+  logger: Logger,
+  result: CrawlResult,
+): Promise<{ scope: BoxScope; url: string }> {
+  const customerUrl = `${config.flexBaseUrl}${CUSTOMER_BOXES_SEARCH_PATH}`;
+  const userUrl = `${config.flexBaseUrl}${USER_BOXES_SEARCH_PATH}`;
+  const probeBody = {
+    filter: {
+      statuses: ["DONE"],
+      templateKeys: [],
+      writerHashedIds: [],
+      approverTargets: [],
+      referrerTargets: [],
+      starred: false,
+    },
+    search: { keyword: "", type: "ALL" },
+  };
+  const probeUrl = `${customerUrl}?size=1&sortType=LAST_UPDATED_AT&direction=DESC`;
+  try {
+    await flexPost(authCtx, probeUrl, probeBody);
+    logger.info("결재 문서 검색 스코프: customer (워크스페이스 전체)");
+    return { scope: "customer", url: customerUrl };
+  } catch (err) {
+    if (err instanceof FlexHttpError && err.status === 403) {
+      logger.warn(
+        "customer-boxes/search 403 — user-boxes로 폴백. 워크스페이스 전체가 아닌 " +
+          "로그인 계정이 관여한 문서만 수집됩니다. 전체 모집단을 보려면 크롤러 계정에 " +
+          "관리자 권한을 부여하세요. (planetarium/reflex#49)",
+      );
+      result.errors.push({
+        target: "instance-scope",
+        phase: "scope-detect",
+        message: "customer-boxes 403, fallback to user-boxes (narrower scope)",
+        timestamp: nowISO(),
+      });
+      return { scope: "user", url: userUrl };
+    }
+    throw err;
+  }
 }
 
 interface SearchGroup {
