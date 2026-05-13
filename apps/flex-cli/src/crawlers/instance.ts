@@ -64,8 +64,9 @@ export async function crawlInstances(
      * 이번 run이 실제로 사용한 검색 스코프. scope probe가 throw해서 그룹 루프에
      * 진입조차 못 한 경우 undefined — "어느 스코프로 돌았다"고 잘못 보고하지
      * 않기 위함. 호출자가 보고서/자동화에서 이 값만 보고 분기하더라도 안전하다.
-     * 실패 경위는 `result.errors`의 `instance-list`/`instance-scope` 항목에서
-     * 확인 가능.
+     * 실패한 cycle의 원인은 `result.errors`의 `instance-list` 항목에서 확인.
+     * 403→user 폴백은 실패가 아니므로 errors에 새지 않는다 — 보고서의
+     * `instancesBoxScope: "user"` 값과 logger.warn 한 줄로만 신호한다.
      */
     boxScope: BoxScope | undefined;
   }
@@ -139,10 +140,11 @@ export async function crawlInstances(
 
   try {
     // 검색 스코프 probe — customer-boxes(워크스페이스 전체)를 우선 시도하고
-    // 403(관리자 권한 부재)이면 user-boxes로 폴백. 폴백은 silent하지 않게
-    // warn 로그 + result.errors push로 운영자에게 노출한다. 403 외 에러
-    // (네트워크/5xx 등)는 그대로 throw → 아래 catch가 listStageOk=false로
-    // 떨어뜨려 워터마크/lastFullReconAt 갱신을 보류한다.
+    // 403(관리자 권한 부재)이면 user-boxes로 폴백. 폴백은 비치명이므로 errors
+    // 에는 새지 않고 logger.warn 한 줄 + 보고서의 `instancesBoxScope: "user"`
+    // 값으로만 신호한다 (errors에 넣으면 flex-ax crawl이 exit code 2로 죽음).
+    // 403 외 에러 (네트워크/5xx 등)는 그대로 throw → 아래 catch가
+    // listStageOk=false로 떨어뜨려 워터마크/lastFullReconAt 갱신을 보류한다.
     const resolved = await resolveBoxScope(authCtx, config, catalog, logger, result);
     boxScope = resolved.scope;
     searchUrl = resolved.url;
@@ -348,9 +350,11 @@ export async function crawlInstances(
 /**
  * 검색 스코프(customer vs user)를 한 번의 size=1 probe로 결정한다.
  * customer-boxes는 관리자 권한이 있어야 200을 받고, 권한 없으면 403이 떨어진다.
- * 비관리자 계정에서도 크롤이 멈추지 않도록 user-boxes로 폴백하되, 운영자가
- * 알 수 있게 warn + result.errors에 기록 — silent하게 모집단이 줄어드는 것
- * 방지가 목적이다(planetarium/reflex#49 참조).
+ * 비관리자 계정에서도 크롤이 멈추지 않도록 user-boxes로 폴백하되, silent하게
+ * 모집단이 줄어들지 않도록 logger.warn으로 알린다. 폴백은 "성공이지만 좁아진"
+ * 비치명 상태이므로 result.errors에는 push하지 않는다 — CLI exit code가
+ * 진짜 실패와 구분되지 않게 된다. 보고서의 `instancesBoxScope: "user"` 값이
+ * 운영자가 보고서만 봐도 알아챌 수 있는 통합 신호다 (planetarium/reflex#49 참조).
  *
  * 403 외의 에러는 라우팅·서비스 장애일 수 있으므로 그대로 throw하여 호출자
  * 레벨의 list-stage catch가 처리하게 한다 (이때 listStageOk=false로 떨어져
