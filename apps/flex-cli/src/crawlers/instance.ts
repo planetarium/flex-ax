@@ -122,10 +122,11 @@ export async function crawlInstances(
 
   // effectiveFull / existingBeforeRun은 검색 스코프(`boxScope`) 결정 후에야
   // 확정할 수 있다 (스코프 변경 시 자동 풀크롤 트리거 때문). 따라서 try 안에서
-  // 결정하고, 외부에서는 fallback 의미의 디폴트만 잡아둔다.
-  //   - effectiveFull: scope probe가 throw해서 try에 진입하기 전에 catch로
-  //     떨어진 경우, "정상 진행 못함"이므로 false로 둔다. listStageOk=false도
-  //     함께 잡혀 lastFullReconAt이 갱신되지 않는다.
+  // 결정하고, 여기서는 catch로 떨어졌을 때 사용되는 디폴트만 박아둔다.
+  //   - effectiveFull: scope probe가 try 내부에서 throw하면 catch로 떨어져
+  //     이 값이 그대로 사용된다. 명시적 `--mode=full` 외에는 false — "정상 진행
+  //     못함"이므로 풀크롤 stamp/missing diff를 트리거하지 않는다. catch에서
+  //     함께 listStageOk=false가 되어 lastFullReconAt 갱신은 어차피 막힌다.
   //   - existingBeforeRun: null이면 missing diff 자체를 생략 — 부분 결과에서
   //     missing 후보를 만들면 false positive 폭증.
   let effectiveFull = mode === "full";
