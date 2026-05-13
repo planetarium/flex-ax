@@ -368,7 +368,16 @@ async function resolveBoxScope(
   };
   const probeUrl = `${customerUrl}?size=1&sortType=LAST_UPDATED_AT&direction=DESC`;
   try {
-    await flexPost(authCtx, probeUrl, probeBody);
+    // 그룹 search와 동일한 회복력을 갖도록 withRetry로 감싼다 — 그렇지 않으면
+    // 일시적 429/5xx/네트워크 블립이 list-stage 전체를 죽인다. 단 403은
+    // "권한 없음 = user-boxes로 폴백"의 신호로 사용하므로 재시도 대상에서
+    // 제외 — `shouldRetry`로 4xx 전부를 차단해 4xx류는 단발 throw로 끝낸다.
+    await withRetry(() => flexPost(authCtx, probeUrl, probeBody), {
+      maxRetries: config.maxRetries,
+      delayMs: config.requestDelayMs,
+      shouldRetry: (e) => !(e instanceof FlexHttpError && e.status >= 400 && e.status < 500),
+      onRetry: () => result.retries++,
+    });
     logger.info("결재 문서 검색 스코프: customer (워크스페이스 전체)");
     return { scope: "customer", url: customerUrl };
   } catch (err) {

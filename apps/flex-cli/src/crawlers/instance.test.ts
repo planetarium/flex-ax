@@ -1478,6 +1478,67 @@ describe("crawlInstances box scope resolution", () => {
     // 스코프도 안 박혀야 함 (실패 cycle이므로 다음 run에서 자가복구 가능).
     assert.equal(wm?.lastCrawledBoxScope, undefined);
   });
+
+  it("scope probe retries on transient 5xx and recovers", async () => {
+    // 그룹 search와 동일한 회복력 — 일시적 5xx에서 scope detection이 죽지
+    // 않아야 한다. 첫 호출만 503, 그 다음부터 200.
+    let probeCalls = 0;
+    globalThis.fetch = (async (input: unknown, init?: { method?: string; body?: string }) => {
+      const url = String(input);
+      if (url.includes("/customer-boxes/search")) {
+        probeCalls++;
+        if (probeCalls === 1) {
+          return new Response("temporary", { status: 503 });
+        }
+        return new Response(JSON.stringify({ documents: [], total: 0, hasNext: false }), {
+          status: 200,
+        });
+      }
+      return new Response("nf", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await crawlInstances(
+      makeAuth(),
+      // probe + groups 모두 합쳐 최소 1 retry 허용.
+      { ...makeConfig(), maxRetries: 2, requestDelayMs: 0 },
+      null,
+      makeStorage(),
+      makeLogger(),
+    );
+
+    assert.equal(result.boxScope, "customer");
+    assert.ok(probeCalls >= 2, `probe must retry on 5xx, called ${probeCalls} times`);
+    // withRetry의 onRetry로 retries 카운터가 누적되었는지 — 그룹 search 단계도
+    // 자체 retry가 있으나, 본 mock은 그쪽에서 5xx를 주지 않으므로 retries는
+    // 정확히 1 (probe의 한 번)이어야 한다.
+    assert.equal(result.retries, 1);
+  });
+
+  it("scope probe does not retry on 4xx (e.g. 401 unauthorized) — fast-fail to list-stage error", async () => {
+    // 4xx는 영구 실패로 간주해 backoff 낭비를 피한다. 401은 403과 달리 fallback
+    // 대상도 아니므로 그대로 list-stage catch로 떨어져 listStageOk=false.
+    let probeCalls = 0;
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/customer-boxes/search")) {
+        probeCalls++;
+        return new Response("unauthorized", { status: 401 });
+      }
+      return new Response("nf", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await crawlInstances(
+      makeAuth(),
+      { ...makeConfig(), maxRetries: 3, requestDelayMs: 0 },
+      null,
+      makeStorage(),
+      makeLogger(),
+    );
+
+    assert.equal(probeCalls, 1, "4xx must not be retried");
+    // listStageOk=false 경로 — instance-list 에러 1건.
+    assert.ok(result.errors.find((e) => e.target === "instance-list"));
+  });
 });
 
 describe("crawlInstances scope-aware migration", () => {
