@@ -1444,10 +1444,14 @@ describe("crawlInstances box scope resolution", () => {
         `after fallback, real search must hit user-boxes, got ${c.url}`,
       );
     }
-    // 폴백은 silent하지 않아야 한다 — result.errors에 scope-detect 항목.
-    const scopeErr = result.errors.find((e) => e.target === "instance-scope");
-    assert.ok(scopeErr, "fallback must push an instance-scope error for visibility");
-    assert.equal(scopeErr?.phase, "scope-detect");
+    // 폴백은 "성공이지만 모집단이 좁아짐"의 비치명 신호 — `result.errors`에
+    // 절대 새지 않아야 한다 (그러면 flex-ax crawl이 exit code 2로 죽어 CI/cron이
+    // 진짜 실패와 구분 못 함). 가시성은 boxScope="user"로 충분히 확보됨.
+    assert.equal(
+      result.errors.find((e) => e.target === "instance-scope"),
+      undefined,
+      "scope fallback must NOT push to result.errors (would fail CI exit code)",
+    );
     // 폴백 자체는 failure로 안 카운트해서 워터마크 갱신을 막지 않는다 — 운영자가
     // 비관리자 계정으로 의도적으로 user-boxes 모집단을 받고 있을 수 있다.
     assert.equal(result.failureCount, 0);

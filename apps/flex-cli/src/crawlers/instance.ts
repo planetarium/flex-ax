@@ -412,12 +412,11 @@ async function resolveBoxScope(
           "로그인 계정이 관여한 문서만 수집됩니다. 전체 모집단을 보려면 크롤러 계정에 " +
           "관리자 권한을 부여하세요. (planetarium/reflex#49)",
       );
-      result.errors.push({
-        target: "instance-scope",
-        phase: "scope-detect",
-        message: "customer-boxes 403, fallback to user-boxes (narrower scope)",
-        timestamp: nowISO(),
-      });
+      // 폴백은 "성공이지만 모집단이 좁아진" 상태이지 실패가 아니다 —
+      // result.errors에 넣으면 `flex-ax crawl`이 exit code 2로 죽어 CI/cron이
+      // 진짜 실패와 구분 못 한다. 가시성은 (a) logger.warn 한 줄 + (b) 보고서의
+      // `instancesBoxScope: "user"` 값으로 확보 — 비관리자로 의도적으로 돌리는
+      // 운영도, 권한이 회수되어 좁아진 상태도 같은 두 신호로 다 잡힌다.
       return { scope: "user", url: userUrl };
     }
     throw err;
