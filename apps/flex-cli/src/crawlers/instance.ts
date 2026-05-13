@@ -134,7 +134,7 @@ export async function crawlInstances(
     // warn 로그 + result.errors push로 운영자에게 노출한다. 403 외 에러
     // (네트워크/5xx 등)는 그대로 throw → 아래 catch가 listStageOk=false로
     // 떨어뜨려 워터마크/lastFullReconAt 갱신을 보류한다.
-    const resolved = await resolveBoxScope(authCtx, config, logger, result);
+    const resolved = await resolveBoxScope(authCtx, config, catalog, logger, result);
     boxScope = resolved.scope;
     searchUrl = resolved.url;
 
@@ -350,11 +350,20 @@ export async function crawlInstances(
 async function resolveBoxScope(
   authCtx: AuthContext,
   config: Config,
+  catalog: ApiCatalog | null,
   logger: Logger,
   result: CrawlResult,
 ): Promise<{ scope: BoxScope; url: string }> {
+  // user-boxes는 기존 크롤러가 쓰던 경로라 카탈로그에 `instance-search` 엔트리가
+  // 이미 박혀 있을 수 있다(버전·테넌트별 분기를 카탈로그가 흡수). 폴백 경로에서도
+  // 그 override를 존중하기 위해 resolveUrl로 푼다.
+  // customer-boxes는 신규 도입 path이고 카탈로그 발견 대상이 아니므로(`instance-search`
+  // 가 user-boxes에 묶여 있기 때문에) 하드코드 유지 — catalog override를 적용하면
+  // 잘못된 URL에 customer-scope query를 쏘게 된다.
   const customerUrl = `${config.flexBaseUrl}${CUSTOMER_BOXES_SEARCH_PATH}`;
-  const userUrl = `${config.flexBaseUrl}${USER_BOXES_SEARCH_PATH}`;
+  const userUrl = resolveUrl(
+    config.flexBaseUrl, catalog, "instance-search", USER_BOXES_SEARCH_PATH,
+  );
   const probeBody = {
     filter: {
       statuses: ["DONE"],

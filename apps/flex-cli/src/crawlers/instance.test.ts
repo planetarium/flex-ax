@@ -4,6 +4,7 @@ import type { AuthContext } from "../auth/index.js";
 import type { Config } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
 import type { WorkflowInstance } from "../types/instance.js";
+import type { ApiCatalog } from "../types/catalog.js";
 import {
   normalizeWatermarkFile,
   type CrawlReport,
@@ -1512,6 +1513,77 @@ describe("crawlInstances box scope resolution", () => {
     // 자체 retry가 있으나, 본 mock은 그쪽에서 5xx를 주지 않으므로 retries는
     // 정확히 1 (probe의 한 번)이어야 한다.
     assert.equal(result.retries, 1);
+  });
+
+  it("user-boxes fallback URL honors catalog override; customer-boxes stays hardcoded", async () => {
+    // catalog가 `instance-search`에 다른 urlPattern을 박아둔 환경(버전/테넌트
+    // 분기) 시뮬레이션. customer-boxes는 카탈로그에 없는 신규 path라 항상
+    // 하드코드를 써야 하고, 403 폴백 시의 user-boxes는 catalog override를
+    // 존중해야 한다.
+    const catalog: ApiCatalog = {
+      version: "test",
+      capturedAt: "2026-05-13T00:00:00Z",
+      flexBaseUrl: "https://flex.test",
+      discoveredPages: [],
+      entries: [
+        {
+          id: "instance-search",
+          discoveredFrom: "test",
+          method: "POST",
+          urlPattern: "/api/v9/custom-tenant/approval-document/user-boxes/search",
+          exampleUrl: "/api/v9/custom-tenant/approval-document/user-boxes/search",
+          statusCode: 200,
+          capturedAt: "2026-05-13T00:00:00Z",
+        },
+      ],
+      unclassified: [],
+    };
+    const calls: CapturedFetch[] = [];
+    globalThis.fetch = (async (input: unknown, init?: { method?: string; body?: string }) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ url, method, body: init?.body ? JSON.parse(init.body) : null });
+      // customer probe → 403 → fallback to user-boxes.
+      if (url.includes("/customer-boxes/search")) {
+        return new Response(JSON.stringify({ message: "권한 없음" }), { status: 403 });
+      }
+      // user-boxes 호출은 catalog override URL로 들어와야 한다.
+      if (url.includes("/api/v9/custom-tenant/approval-document/user-boxes/search")) {
+        return new Response(JSON.stringify({ documents: [], total: 0, hasNext: false }), {
+          status: 200,
+        });
+      }
+      return new Response("nf", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await crawlInstances(
+      makeAuth(),
+      makeConfig(),
+      catalog,
+      makeStorage(),
+      makeLogger(),
+    );
+
+    assert.equal(result.boxScope, "user");
+    // customer probe는 하드코드된 path로 나가야 함 — catalog override가
+    // customer 쪽으로 새지 않는다는 보장.
+    const customerProbe = calls.find((c) =>
+      c.url.includes("/action/v3/approval-document/customer-boxes/search"),
+    );
+    assert.ok(customerProbe, "customer probe must use hardcoded path");
+    // 폴백 후 그룹 search는 catalog override를 탄 user-boxes 경로로 가야 함.
+    const overrideHits = calls.filter((c) =>
+      c.url.includes("/api/v9/custom-tenant/approval-document/user-boxes/search"),
+    );
+    assert.ok(overrideHits.length > 0, "user-boxes searches must honor catalog override");
+    // 하드코드 path로 user-boxes 검색이 새지 않았는지 (override가 무시되지 않았는지).
+    const hardcodedUserHits = calls.filter((c) =>
+      c.url.includes("/action/v3/approval-document/user-boxes/search"),
+    );
+    assert.equal(
+      hardcodedUserHits.length, 0,
+      "must not fall back to hardcoded user-boxes path when catalog overrides it",
+    );
   });
 
   it("scope probe does not retry on 4xx (e.g. 401 unauthorized) — fast-fail to list-stage error", async () => {
