@@ -13,6 +13,7 @@ import type { ApprovalStep, AttachmentInfo, FieldValue } from "../types/common.j
 import {
   type CrawlResult,
   emptyCrawlResult,
+  FlexHttpError,
   nowISO,
   isLaterIso,
   toKstDate,
@@ -27,6 +28,20 @@ export type CrawlMode = "incremental" | "full";
 
 const APPROVAL_DOCUMENTS_DOMAIN = "approvalDocuments";
 const MS_PER_DAY = 86_400_000;
+
+/**
+ * 결재 문서 검색 스코프.
+ *  - "customer": `/customer-boxes/search` — 워크스페이스 전체. 관리자 권한 필요.
+ *  - "user":     `/user-boxes/search`     — 로그인 계정이 작성자/결재자/참조자로
+ *                                          포함된 문서만 (작성함/결재함/참조함/즐겨찾기).
+ * 디폴트는 "customer"로 시도하고 403이 떨어지면 "user"로 폴백한다.
+ * planetarium/reflex#49 참조 — 비-customer 스코프에서 큰 워크스페이스는
+ * 워크스페이스 모집단의 ~30% 수준만 보인다.
+ */
+export type BoxScope = "customer" | "user";
+
+const CUSTOMER_BOXES_SEARCH_PATH = "/action/v3/approval-document/customer-boxes/search";
+const USER_BOXES_SEARCH_PATH = "/action/v3/approval-document/user-boxes/search";
 
 interface DateRange {
   from: string;
@@ -45,6 +60,15 @@ export async function crawlInstances(
     collectedKeys: Set<string>;
     missingKeys: string[];
     closedSweepCount: number;
+    /**
+     * 이번 run이 실제로 사용한 검색 스코프. scope probe가 throw해서 그룹 루프에
+     * 진입조차 못 한 경우 undefined — "어느 스코프로 돌았다"고 잘못 보고하지
+     * 않기 위함. 호출자가 보고서/자동화에서 이 값만 보고 분기하더라도 안전하다.
+     * 실패한 cycle의 원인은 `result.errors`의 `instance-list` 항목에서 확인.
+     * 403→user 폴백은 실패가 아니므로 errors에 새지 않는다 — 보고서의
+     * `instancesBoxScope: "user"` 값과 logger.warn 한 줄로만 신호한다.
+     */
+    boxScope: BoxScope | undefined;
   }
 > {
   const startTime = Date.now();
@@ -58,10 +82,14 @@ export async function crawlInstances(
 
   logger.info("인스턴스(결재 문서) 수집 시작", { mode });
 
-  const searchUrl = resolveUrl(
-    config.flexBaseUrl, catalog, "instance-search",
-    "/action/v3/approval-document/user-boxes/search",
-  );
+  // boxScope는 scope probe가 성공한 뒤에만 채워진다 — probe가 throw해서 그룹
+  // 루프에 진입조차 못 한 경우에는 undefined로 남아 보고서에 그대로 흘러간다.
+  // "운영자가 scope 필드만 보고도 어느 스코프로 돌았는지 분명히 알 수 있어야
+  // 한다"는 원칙: 5xx/401 등으로 실패한 cycle에 임의의 디폴트("customer")를
+  // 박아두면 자동화/대시보드가 "customer로 정상 동작 중"이라고 오판할 위험.
+  // searchUrl은 try 안에서만 실제로 사용되므로 catch 경로에서의 값은 의미 없음.
+  let boxScope: BoxScope | undefined;
+  let searchUrl = "";
   const detailBase = resolveUrl(
     config.flexBaseUrl, catalog, "instance-detail",
     "/api/v3/approval-document/approval-documents",
@@ -90,42 +118,20 @@ export async function crawlInstances(
   const watermarks = await storage.loadWatermarks();
   const domainState: WatermarkDomainState =
     watermarks[APPROVAL_DOCUMENTS_DOMAIN] ?? { groups: {} };
-  // incremental-eligible 그룹들에 워터마크가 모두 비어 있다면 부트스트랩 —
-  // 사실상 풀크롤. 비-eligible 그룹(IN_PROGRESS sweep)은 어차피 매 실행
-  // 전수 fetch라 effectiveFull 판정에서 제외한다.
-  const noWatermarks = searchGroups
-    .filter((g) => g.incrementalEligible)
-    .every((g) => !domainState.groups[g.label]?.lastUpdatedAt);
-  const effectiveFull = mode === "full" || noWatermarks;
-  if (mode === "incremental" && noWatermarks) {
-    logger.info("워터마크 없음 — bootstrap 풀크롤로 진행");
-  }
   // to 날짜는 그룹 진입 전에 한 번 캡처해서 페이지/그룹 간 일관되게 사용.
   const todayKst = toKstDate(new Date());
 
-  // full reconciliation diff: effectiveFull일 때만 시작 시점의 디스크 상
-  // docKey 집합을 캡처해두고, 종료 후 collectedKeys와 차집합을 missing
-  // 후보로 보고서에 노출. 자동 tombstone은 별도 트랙.
+  // effectiveFull / existingBeforeRun은 검색 스코프(`boxScope`) 결정 후에야
+  // 확정할 수 있다 (스코프 변경 시 자동 풀크롤 트리거 때문). 따라서 try 안에서
+  // 결정하고, 여기서는 catch로 떨어졌을 때 사용되는 디폴트만 박아둔다.
+  //   - effectiveFull: scope probe가 try 내부에서 throw하면 catch로 떨어져
+  //     이 값이 그대로 사용된다. 명시적 `--mode=full` 외에는 false — "정상 진행
+  //     못함"이므로 풀크롤 stamp/missing diff를 트리거하지 않는다. catch에서
+  //     함께 listStageOk=false가 되어 lastFullReconAt 갱신은 어차피 막힌다.
+  //   - existingBeforeRun: null이면 missing diff 자체를 생략 — 부분 결과에서
+  //     missing 후보를 만들면 false positive 폭증.
+  let effectiveFull = mode === "full";
   let existingBeforeRun: Set<string> | null = null;
-  if (effectiveFull) {
-    try {
-      existingBeforeRun = await storage.listExistingInstanceKeys();
-      logger.info("full recon — 기존 docKey 스냅샷 캡처", {
-        count: existingBeforeRun.size,
-      });
-    } catch (err) {
-      // 스냅샷 실패는 missing diff만 비우고 크롤은 계속 진행 (비치명적).
-      logger.error("기존 docKey 스냅샷 실패 — missing diff 생략", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      result.errors.push({
-        target: "instance-recon",
-        phase: "list-existing",
-        message: err instanceof Error ? err.message : String(err),
-        timestamp: nowISO(),
-      });
-    }
-  }
 
   // list-stage(검색 단계)가 try 끝까지 도달했는지 추적. crawlSearchGroup이
   // 재시도 후에도 throw하면 catch에서 false로 전환. failureCount는 doc 단위
@@ -133,6 +139,65 @@ export async function crawlInstances(
   let listStageOk = true;
 
   try {
+    // 검색 스코프 probe — customer-boxes(워크스페이스 전체)를 우선 시도하고
+    // 403(관리자 권한 부재)이면 user-boxes로 폴백. 폴백은 비치명이므로 errors
+    // 에는 새지 않고 logger.warn 한 줄 + 보고서의 `instancesBoxScope: "user"`
+    // 값으로만 신호한다 (errors에 넣으면 flex-ax crawl이 exit code 2로 죽음).
+    // 403 외 에러 (네트워크/5xx 등)는 그대로 throw → 아래 catch가
+    // listStageOk=false로 떨어뜨려 워터마크/lastFullReconAt 갱신을 보류한다.
+    const resolved = await resolveBoxScope(authCtx, config, catalog, logger, result);
+    boxScope = resolved.scope;
+    searchUrl = resolved.url;
+
+    // incremental-eligible 그룹들에 워터마크가 모두 비어 있다면 부트스트랩 —
+    // 사실상 풀크롤. 비-eligible 그룹(IN_PROGRESS sweep)은 어차피 매 실행
+    // 전수 fetch라 effectiveFull 판정에서 제외한다.
+    const noWatermarks = searchGroups
+      .filter((g) => g.incrementalEligible)
+      .every((g) => !domainState.groups[g.label]?.lastUpdatedAt);
+    // 스코프가 직전 성공 run과 다르면(또는 처음 보는 필드면) 이번 사이클을
+    // 풀크롤로 강제. 핵심 케이스: user-boxes 시절 워터마크가 있는 환경이
+    // customer-boxes로 업그레이드된 직후, 운영자가 `--mode=full`을 명시적으로
+    // 주지 않아도 자동으로 백필이 일어난다 (planetarium/reflex#49 후속).
+    // 이미 부트스트랩이거나 풀모드면 굳이 mismatch 로그를 띄우지 않는다.
+    const scopeMismatch =
+      !noWatermarks && domainState.lastCrawledBoxScope !== boxScope;
+    if (mode === "full") {
+      // 명시적 풀모드 — effectiveFull은 이미 true로 초기화됨, 추가 로그 없음.
+    } else if (noWatermarks) {
+      effectiveFull = true;
+      logger.info("워터마크 없음 — bootstrap 풀크롤로 진행");
+    } else if (scopeMismatch) {
+      effectiveFull = true;
+      logger.info("결재 문서 검색 스코프 변경 감지 — 이번 사이클은 풀크롤로 진행", {
+        previousScope: domainState.lastCrawledBoxScope ?? null,
+        currentScope: boxScope,
+      });
+    }
+
+    // full reconciliation diff: effectiveFull일 때만 시작 시점의 디스크 상
+    // docKey 집합을 캡처해두고, 종료 후 collectedKeys와 차집합을 missing
+    // 후보로 보고서에 노출. 자동 tombstone은 별도 트랙.
+    if (effectiveFull) {
+      try {
+        existingBeforeRun = await storage.listExistingInstanceKeys();
+        logger.info("full recon — 기존 docKey 스냅샷 캡처", {
+          count: existingBeforeRun.size,
+        });
+      } catch (err) {
+        // 스냅샷 실패는 missing diff만 비우고 크롤은 계속 진행 (비치명적).
+        logger.error("기존 docKey 스냅샷 실패 — missing diff 생략", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        result.errors.push({
+          target: "instance-recon",
+          phase: "list-existing",
+          message: err instanceof Error ? err.message : String(err),
+          timestamp: nowISO(),
+        });
+      }
+    }
+
     for (const group of searchGroups) {
       const existing = domainState.groups[group.label];
       // incrementalEligible=false 그룹은 워터마크/풀모드 무관 항상 전수 sweep.
@@ -232,6 +297,15 @@ export async function crawlInstances(
     domainState.lastFullReconAt = nowISO();
   }
 
+  // 직전 성공 run의 스코프를 기록한다. listStageOk && failureCount===0 일 때만
+  // 박는다 — 부분 실패 cycle에서 갱신하면 다음 run이 "스코프 일치"로 오판해
+  // 자동 풀크롤 트리거를 놓칠 수 있다 (자가복구 경로가 막힘). effectiveFull은
+  // 게이트하지 않는다 — incremental 사이클에서도 "여전히 같은 스코프"라는
+  // 사실은 확정할 가치가 있다.
+  if (listStageOk && result.failureCount === 0) {
+    domainState.lastCrawledBoxScope = boxScope;
+  }
+
   // Full recon diff — 디스크에 있었지만 이번 실행 목록에서 사라진 docKey들.
   // 권한 회수, 삭제, flex 측 list 누락 등의 신호. 자동 tombstone은 후속.
   // 단, 같은 그룹에 실패가 한 건이라도 있거나 list 단계가 throw로 조기
@@ -270,7 +344,87 @@ export async function crawlInstances(
 
   result.durationMs = Date.now() - startTime;
   logger.info(`\n인스턴스 수집 완료: 성공 ${result.successCount}, 실패 ${result.failureCount}`);
-  return { ...result, collectedKeys, missingKeys, closedSweepCount };
+  return { ...result, collectedKeys, missingKeys, closedSweepCount, boxScope };
+}
+
+/**
+ * 검색 스코프(customer vs user)를 한 번의 size=1 probe로 결정한다.
+ * customer-boxes는 관리자 권한이 있어야 200을 받고, 권한 없으면 403이 떨어진다.
+ * 비관리자 계정에서도 크롤이 멈추지 않도록 user-boxes로 폴백하되, silent하게
+ * 모집단이 줄어들지 않도록 logger.warn으로 알린다. 폴백은 "성공이지만 좁아진"
+ * 비치명 상태이므로 result.errors에는 push하지 않는다 — CLI exit code가
+ * 진짜 실패와 구분되지 않게 된다. 보고서의 `instancesBoxScope: "user"` 값이
+ * 운영자가 보고서만 봐도 알아챌 수 있는 통합 신호다 (planetarium/reflex#49 참조).
+ *
+ * 403 외의 에러는 라우팅·서비스 장애일 수 있으므로 그대로 throw하여 호출자
+ * 레벨의 list-stage catch가 처리하게 한다 (이때 listStageOk=false로 떨어져
+ * watermark/lastFullReconAt 갱신이 보류된다).
+ */
+async function resolveBoxScope(
+  authCtx: AuthContext,
+  config: Config,
+  catalog: ApiCatalog | null,
+  logger: Logger,
+  result: CrawlResult,
+): Promise<{ scope: BoxScope; url: string }> {
+  // user-boxes는 기존 크롤러가 쓰던 경로라 카탈로그에 `instance-search` 엔트리가
+  // 이미 박혀 있을 수 있다(버전·테넌트별 분기를 카탈로그가 흡수). 폴백 경로에서도
+  // 그 override를 존중하기 위해 resolveUrl로 푼다.
+  // customer-boxes는 신규 도입 path이고 카탈로그 발견 대상이 아니므로(`instance-search`
+  // 가 user-boxes에 묶여 있기 때문에) 하드코드 유지 — catalog override를 적용하면
+  // 잘못된 URL에 customer-scope query를 쏘게 된다.
+  const customerUrl = `${config.flexBaseUrl}${CUSTOMER_BOXES_SEARCH_PATH}`;
+  const userUrl = resolveUrl(
+    config.flexBaseUrl, catalog, "instance-search", USER_BOXES_SEARCH_PATH,
+  );
+  const probeBody = {
+    filter: {
+      statuses: ["DONE"],
+      templateKeys: [],
+      writerHashedIds: [],
+      approverTargets: [],
+      referrerTargets: [],
+      starred: false,
+    },
+    search: { keyword: "", type: "ALL" },
+  };
+  const probeUrl = `${customerUrl}?size=1&sortType=LAST_UPDATED_AT&direction=DESC`;
+  try {
+    // 그룹 search와 동일한 회복력을 갖도록 withRetry로 감싼다 — 그렇지 않으면
+    // 일시적 429/5xx/네트워크 블립이 list-stage 전체를 죽인다. 재시도 정책:
+    //   - 429: rate-limited → withRetry가 `retryAfterMs`를 존중하며 재시도.
+    //   - 5xx, 네트워크/파싱 에러: 재시도.
+    //   - 그 외 4xx (400/401/403/404): 영구 실패 — 재시도 무의미하므로 fast-fail.
+    //     특히 403은 "권한 없음 = user-boxes로 폴백"의 신호로 사용된다.
+    await withRetry(() => flexPost(authCtx, probeUrl, probeBody), {
+      maxRetries: config.maxRetries,
+      delayMs: config.requestDelayMs,
+      shouldRetry: (e) => {
+        if (!(e instanceof FlexHttpError)) return true;
+        if (e.status === 429) return true;
+        if (e.status >= 400 && e.status < 500) return false;
+        return true;
+      },
+      onRetry: () => result.retries++,
+    });
+    logger.info("결재 문서 검색 스코프: customer (워크스페이스 전체)");
+    return { scope: "customer", url: customerUrl };
+  } catch (err) {
+    if (err instanceof FlexHttpError && err.status === 403) {
+      logger.warn(
+        "customer-boxes/search 403 — user-boxes로 폴백. 워크스페이스 전체가 아닌 " +
+          "로그인 계정이 관여한 문서만 수집됩니다. 전체 모집단을 보려면 크롤러 계정에 " +
+          "관리자 권한을 부여하세요. (planetarium/reflex#49)",
+      );
+      // 폴백은 "성공이지만 모집단이 좁아진" 상태이지 실패가 아니다 —
+      // result.errors에 넣으면 `flex-ax crawl`이 exit code 2로 죽어 CI/cron이
+      // 진짜 실패와 구분 못 한다. 가시성은 (a) logger.warn 한 줄 + (b) 보고서의
+      // `instancesBoxScope: "user"` 값으로 확보 — 비관리자로 의도적으로 돌리는
+      // 운영도, 권한이 회수되어 좁아진 상태도 같은 두 신호로 다 잡힌다.
+      return { scope: "user", url: userUrl };
+    }
+    throw err;
+  }
 }
 
 interface SearchGroup {

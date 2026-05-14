@@ -13,7 +13,7 @@ import {
 import { createStorageWriter, type CrawlReport, type StorageWriter } from "../storage/index.js";
 import type { ApiCatalog } from "../types/catalog.js";
 import { crawlTemplates } from "../crawlers/template.js";
-import { crawlInstances, type CrawlMode } from "../crawlers/instance.js";
+import { crawlInstances, type BoxScope, type CrawlMode } from "../crawlers/instance.js";
 import { crawlAttendanceApprovals } from "../crawlers/attendance.js";
 import { crawlCatalogEndpoints } from "../crawlers/catalog-endpoints.js";
 import type { CrawlError } from "../types/common.js";
@@ -161,25 +161,29 @@ async function runCrawlForCustomer(
   let attendanceResult: CrawlResult = emptyCrawlResult();
   let catalogEndpointsResult: CrawlResult = emptyCrawlResult();
   let instancesMissing: string[] = [];
+  let instancesBoxScope: BoxScope | undefined;
   let fatalError: CrawlError | null = null;
 
   try {
     templateResult = await crawlTemplates(authCtx, config, catalog, storage, logger);
     const instanceCrawlResult = await crawlInstances(authCtx, config, catalog, storage, logger, mode);
     // crawlInstances는 in-process 배선용으로 collectedKeys / missingKeys /
-    // closedSweepCount를 추가로 반환한다. report.instances에는 plain CrawlResult
-    // 만 들어가야 JSON 직렬화에서 Set이 `{}`로 새거나 추가 필드가 노출되는 일이
-    // 없다. closedSweepCount는 instance.ts 안에서 logger.info로 이미 보고되므로
-    // 여기서는 destructure로 떼어내기만 한다.
+    // closedSweepCount / boxScope를 추가로 반환한다. report.instances에는
+    // plain CrawlResult 만 들어가야 JSON 직렬화에서 Set이 `{}`로 새거나 추가
+    // 필드가 노출되는 일이 없다. closedSweepCount는 instance.ts 안에서
+    // logger.info로 이미 보고되므로 여기서는 destructure로 떼어내기만 한다.
+    // boxScope는 report 상위에 별도로 올려 운영자가 모집단 범위를 알 수 있게 한다.
     const {
       collectedKeys,
       missingKeys,
       closedSweepCount: _closedSweepCount,
+      boxScope,
       ...instancePlain
     } = instanceCrawlResult;
     void _closedSweepCount;
     instanceResult = instancePlain;
     instancesMissing = missingKeys;
+    instancesBoxScope = boxScope;
     attendanceResult = await crawlAttendanceApprovals(
       authCtx, config, catalog, storage, logger, collectedKeys,
     );
@@ -216,6 +220,7 @@ async function runCrawlForCustomer(
     attendance: attendanceResult,
     catalogEndpoints: catalogEndpointsResult,
     instancesMissing: instancesMissing.length > 0 ? instancesMissing : undefined,
+    instancesBoxScope,
     totalErrors,
   };
 

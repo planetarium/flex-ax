@@ -4,6 +4,7 @@ import type { AuthContext } from "../auth/index.js";
 import type { Config } from "../config/index.js";
 import type { Logger } from "../logger/index.js";
 import type { WorkflowInstance } from "../types/instance.js";
+import type { ApiCatalog } from "../types/catalog.js";
 import {
   normalizeWatermarkFile,
   type CrawlReport,
@@ -21,6 +22,20 @@ interface CapturedFetch {
   url: string;
   method: string;
   body: unknown;
+}
+
+/**
+ * 그룹 단위 실제 search 호출만 골라내는 헬퍼. crawlInstances는 시작 시 스코프
+ * 결정을 위해 customer-boxes에 `size=1` probe를 한 번 쏘는데, 테스트에서
+ * "이번 실행이 보낸 search call들" 같은 assertion에는 이 probe를 제외하고
+ * 봐야 한다.
+ */
+function isRealSearchCall(c: { url: string }): boolean {
+  if (!c.url.includes("/customer-boxes/search") && !c.url.includes("/user-boxes/search")) {
+    return false;
+  }
+  // 스코프 probe는 query에 size=1, 실제 그룹 search는 searchPageSize(테스트 기본 100).
+  return !/[?&]size=1(?:&|$)/.test(c.url);
 }
 
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -162,7 +177,7 @@ function setupFetch(
     const body = init?.body ? JSON.parse(init.body) : null;
     calls.push({ url, method, body });
 
-    if (url.includes("/user-boxes/search")) {
+    if (url.includes("/customer-boxes/search") || url.includes("/user-boxes/search")) {
       const statuses: string[] = body?.filter?.statuses ?? [];
       const key = statuses.sort().join("|");
       const resp = searchResponses.get(key);
@@ -217,7 +232,7 @@ describe("crawlInstances incremental wiring", () => {
     const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
 
     assert.equal(result.successCount, 2);
-    const searchCalls = calls.filter((c) => c.url.includes("/user-boxes/search"));
+    const searchCalls = calls.filter((c) => isRealSearchCall(c));
     for (const c of searchCalls) {
       const filter = (c.body as { filter: Record<string, unknown> }).filter;
       assert.ok(
@@ -237,6 +252,7 @@ describe("crawlInstances incremental wiring", () => {
   it("injects lastUpdatedDateRange (KST) when watermarks exist and mode=incremental", async () => {
     const initial: WatermarkFile = {
       approvalDocuments: {
+        lastCrawledBoxScope: "customer",
         groups: {
           "in-progress": {
             lastUpdatedAt: "2026-04-29T12:17:44Z",
@@ -271,7 +287,7 @@ describe("crawlInstances incremental wiring", () => {
     // file (e.g. left over from a pre-policy run).
     const inProgressCall = calls.find(
       (c) =>
-        c.url.includes("/user-boxes/search") &&
+        isRealSearchCall(c) &&
         Array.isArray((c.body as { filter: { statuses: string[] } }).filter.statuses) &&
         (c.body as { filter: { statuses: string[] } }).filter.statuses[0] === "IN_PROGRESS",
     );
@@ -284,7 +300,7 @@ describe("crawlInstances incremental wiring", () => {
 
     const doneCall = calls.find(
       (c) =>
-        c.url.includes("/user-boxes/search") &&
+        isRealSearchCall(c) &&
         (c.body as { filter: { statuses: string[] } }).filter.statuses.includes("DONE"),
     );
     assert.ok(doneCall);
@@ -299,6 +315,7 @@ describe("crawlInstances incremental wiring", () => {
   it("mode=full ignores existing watermarks and skips lastUpdatedDateRange", async () => {
     const initial: WatermarkFile = {
       approvalDocuments: {
+        lastCrawledBoxScope: "customer",
         groups: {
           "in-progress": {
             lastUpdatedAt: "2026-04-29T12:00:00Z",
@@ -323,7 +340,7 @@ describe("crawlInstances incremental wiring", () => {
       "full",
     );
 
-    const searchCalls = calls.filter((c) => c.url.includes("/user-boxes/search"));
+    const searchCalls = calls.filter((c) => isRealSearchCall(c));
     for (const c of searchCalls) {
       const filter = (c.body as { filter: Record<string, unknown> }).filter;
       assert.ok(
@@ -336,6 +353,7 @@ describe("crawlInstances incremental wiring", () => {
   it("does not advance the done watermark when that group has any failure", async () => {
     const initial: WatermarkFile = {
       approvalDocuments: {
+        lastCrawledBoxScope: "customer",
         groups: {
           done: {
             lastUpdatedAt: "2026-04-29T00:00:00Z",
@@ -382,6 +400,7 @@ describe("crawlInstances incremental wiring", () => {
     // into a full crawl rather than aborting on RangeError.
     const initial = {
       approvalDocuments: {
+        lastCrawledBoxScope: "customer",
         groups: {
           done: {
             lastUpdatedAt: "garbage",
@@ -410,7 +429,7 @@ describe("crawlInstances incremental wiring", () => {
     assert.equal(result.failureCount, 0);
     const doneCall = calls.find(
       (c) =>
-        c.url.includes("/user-boxes/search") &&
+        isRealSearchCall(c) &&
         (c.body as { filter: { statuses: string[] } }).filter.statuses.includes("DONE"),
     );
     assert.ok(doneCall);
@@ -433,6 +452,7 @@ describe("crawlInstances incremental wiring", () => {
     // would return nothing forever.
     const initial = {
       approvalDocuments: {
+        lastCrawledBoxScope: "customer",
         groups: {
           done: {
             lastUpdatedAt: "2099-01-01T00:00:00Z",
@@ -462,7 +482,7 @@ describe("crawlInstances incremental wiring", () => {
     // lastUpdatedDateRange in the done search.
     const doneCall = calls.find(
       (c) =>
-        c.url.includes("/user-boxes/search") &&
+        isRealSearchCall(c) &&
         (c.body as { filter: { statuses: string[] } }).filter.statuses.includes("DONE"),
     );
     assert.ok(doneCall);
@@ -504,6 +524,7 @@ describe("crawlInstances incremental wiring", () => {
     // candidate first and refuse to advance. epoch-ms comparison fixes it.
     const initial: WatermarkFile = {
       approvalDocuments: {
+        lastCrawledBoxScope: "customer",
         groups: {
           done: {
             lastUpdatedAt: "2026-04-29T12:17:44Z",
@@ -538,6 +559,7 @@ describe("crawlInstances incremental wiring", () => {
   it("stamps lastSuccessfulRunAt on a clean zero-doc run while preserving lastUpdatedAt", async () => {
     const initial: WatermarkFile = {
       approvalDocuments: {
+        lastCrawledBoxScope: "customer",
         groups: {
           done: {
             lastUpdatedAt: "2026-04-29T12:00:00Z",
@@ -634,6 +656,7 @@ describe("crawlInstances incremental wiring", () => {
     // changed docs — disk-vs-collected diff would be hugely noisy.
     const initial: WatermarkFile = {
       approvalDocuments: {
+        lastCrawledBoxScope: "customer",
         groups: {
           "in-progress": {
             lastUpdatedAt: "2026-04-01T00:00:00Z",
@@ -697,7 +720,7 @@ describe("crawlInstances incremental wiring", () => {
     // listStageOk flag must still block the full-recon outcomes.
     globalThis.fetch = (async (input: unknown) => {
       const url = String(input);
-      if (url.includes("/user-boxes/search")) {
+      if (url.includes("/customer-boxes/search") || url.includes("/user-boxes/search")) {
         return new Response("server error", { status: 500 });
       }
       return new Response("not found", { status: 404 });
@@ -750,6 +773,7 @@ describe("crawlInstances incremental wiring", () => {
     // date and observe an even-older one.
     const initial: WatermarkFile = {
       approvalDocuments: {
+        lastCrawledBoxScope: "customer",
         groups: {
           done: {
             lastUpdatedAt: "2026-05-01T00:00:00Z",
@@ -1086,7 +1110,7 @@ describe("crawlInstances incremental wiring", () => {
     // Permanent search 500 → listStageOk=false → sweep must not run.
     globalThis.fetch = (async (input: unknown) => {
       const url = String(input);
-      if (url.includes("/user-boxes/search")) {
+      if (url.includes("/customer-boxes/search") || url.includes("/user-boxes/search")) {
         return new Response("server error", { status: 500 });
       }
       return new Response("not found", { status: 404 });
@@ -1128,6 +1152,7 @@ describe("crawlInstances incremental wiring", () => {
     // must not survive a clean run.
     const initial: WatermarkFile = {
       approvalDocuments: {
+        lastCrawledBoxScope: "customer",
         groups: {
           "in-progress": {
             lastUpdatedAt: "2026-04-29T00:00:00Z",
@@ -1154,7 +1179,7 @@ describe("crawlInstances incremental wiring", () => {
 
     const inProgressCall = calls.find(
       (c) =>
-        c.url.includes("/user-boxes/search") &&
+        isRealSearchCall(c) &&
         (c.body as { filter: { statuses: string[] } }).filter.statuses[0] === "IN_PROGRESS",
     );
     assert.ok(inProgressCall);
@@ -1340,6 +1365,508 @@ describe("computeSignatureHash", () => {
     assert.equal(
       computeSignatureHash(detail({ comments: [c1, c2] })),
       computeSignatureHash(detail({ comments: [c2, c1] })),
+    );
+  });
+});
+
+describe("crawlInstances box scope resolution", () => {
+  beforeEach(() => {
+    globalThis.fetch = ORIGINAL_FETCH;
+  });
+  afterEach(() => {
+    globalThis.fetch = ORIGINAL_FETCH;
+  });
+
+  it("uses customer-boxes when scope probe returns 200", async () => {
+    const calls: CapturedFetch[] = [];
+    globalThis.fetch = (async (input: unknown, init?: { method?: string; body?: string }) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ url, method, body: init?.body ? JSON.parse(init.body) : null });
+      if (url.includes("/customer-boxes/search") || url.includes("/user-boxes/search")) {
+        return new Response(JSON.stringify({ documents: [], total: 0, hasNext: false }), {
+          status: 200,
+        });
+      }
+      return new Response("nf", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await crawlInstances(
+      makeAuth(), makeConfig(), null, makeStorage(), makeLogger(),
+    );
+
+    assert.equal(result.boxScope, "customer");
+    const realSearches = calls.filter(isRealSearchCall);
+    assert.ok(realSearches.length > 0, "must have made at least one real search call");
+    for (const c of realSearches) {
+      assert.ok(
+        c.url.includes("/customer-boxes/search"),
+        `real search must hit customer-boxes, got ${c.url}`,
+      );
+    }
+    // 403 폴백 분기는 트리거되지 않아야 하므로 scope-detect 에러도 없어야 한다.
+    assert.equal(
+      result.errors.find((e) => e.target === "instance-scope"),
+      undefined,
+    );
+  });
+
+  it("falls back to user-boxes when customer-boxes probe returns 403", async () => {
+    const calls: CapturedFetch[] = [];
+    globalThis.fetch = (async (input: unknown, init?: { method?: string; body?: string }) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ url, method, body: init?.body ? JSON.parse(init.body) : null });
+      if (url.includes("/customer-boxes/search")) {
+        return new Response(
+          JSON.stringify({ status: 403, code: "PERM_403_000", message: "권한이 없습니다" }),
+          { status: 403 },
+        );
+      }
+      if (url.includes("/user-boxes/search")) {
+        return new Response(JSON.stringify({ documents: [], total: 0, hasNext: false }), {
+          status: 200,
+        });
+      }
+      return new Response("nf", { status: 404 });
+    }) as typeof fetch;
+
+    const storage = makeStorage();
+    const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    assert.equal(result.boxScope, "user");
+    // 폴백 후 실제 그룹 search는 모두 user-boxes로 가야 한다.
+    const realSearches = calls.filter(isRealSearchCall);
+    assert.ok(realSearches.length > 0, "must have made at least one real search call");
+    for (const c of realSearches) {
+      assert.ok(
+        c.url.includes("/user-boxes/search"),
+        `after fallback, real search must hit user-boxes, got ${c.url}`,
+      );
+    }
+    // 폴백은 "성공이지만 모집단이 좁아짐"의 비치명 신호 — `result.errors`에
+    // 절대 새지 않아야 한다 (그러면 flex-ax crawl이 exit code 2로 죽어 CI/cron이
+    // 진짜 실패와 구분 못 함). 가시성은 boxScope="user"로 충분히 확보됨.
+    assert.equal(
+      result.errors.find((e) => e.target === "instance-scope"),
+      undefined,
+      "scope fallback must NOT push to result.errors (would fail CI exit code)",
+    );
+    // 폴백 자체는 failure로 안 카운트해서 워터마크 갱신을 막지 않는다 — 운영자가
+    // 비관리자 계정으로 의도적으로 user-boxes 모집단을 받고 있을 수 있다.
+    assert.equal(result.failureCount, 0);
+  });
+
+  it("non-403 probe failure aborts the list stage (listStageOk=false path)", async () => {
+    const calls: CapturedFetch[] = [];
+    globalThis.fetch = (async (input: unknown, init?: { method?: string; body?: string }) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ url, method, body: init?.body ? JSON.parse(init.body) : null });
+      if (url.includes("/customer-boxes/search")) {
+        return new Response("server error", { status: 500 });
+      }
+      return new Response("nf", { status: 404 });
+    }) as typeof fetch;
+
+    const storage = makeStorage();
+    const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    // probe가 500으로 throw → list-stage catch로 떨어져 instance-list 에러 1건.
+    const listErr = result.errors.find((e) => e.target === "instance-list");
+    assert.ok(listErr, "non-403 probe failure must be recorded as a list-stage error");
+    // 그룹 루프에 진입하기 전이라 그룹 워터마크도 lastFullReconAt도 안 박혀야 한다.
+    // (domain entry 자체는 빈 groups로 저장되지만 의미 있는 진행은 없음.)
+    const wm = storage._watermarks.approvalDocuments;
+    assert.deepEqual(wm?.groups ?? {}, {});
+    assert.equal(wm?.lastFullReconAt, undefined);
+    // 스코프도 안 박혀야 함 (실패 cycle이므로 다음 run에서 자가복구 가능).
+    assert.equal(wm?.lastCrawledBoxScope, undefined);
+    // 반환값의 boxScope도 undefined여야 한다 — 운영자가 보고서에서 "어느
+    // 스코프로 돌았다"고 오판하지 않게.
+    assert.equal(result.boxScope, undefined);
+  });
+
+  it("scope probe retries on transient 5xx and recovers", async () => {
+    // 그룹 search와 동일한 회복력 — 일시적 5xx에서 scope detection이 죽지
+    // 않아야 한다. 첫 호출만 503, 그 다음부터 200.
+    let probeCalls = 0;
+    globalThis.fetch = (async (input: unknown, init?: { method?: string; body?: string }) => {
+      const url = String(input);
+      if (url.includes("/customer-boxes/search")) {
+        probeCalls++;
+        if (probeCalls === 1) {
+          return new Response("temporary", { status: 503 });
+        }
+        return new Response(JSON.stringify({ documents: [], total: 0, hasNext: false }), {
+          status: 200,
+        });
+      }
+      return new Response("nf", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await crawlInstances(
+      makeAuth(),
+      // probe + groups 모두 합쳐 최소 1 retry 허용.
+      { ...makeConfig(), maxRetries: 2, requestDelayMs: 0 },
+      null,
+      makeStorage(),
+      makeLogger(),
+    );
+
+    assert.equal(result.boxScope, "customer");
+    assert.ok(probeCalls >= 2, `probe must retry on 5xx, called ${probeCalls} times`);
+    // withRetry의 onRetry로 retries 카운터가 누적되었는지 — 그룹 search 단계도
+    // 자체 retry가 있으나, 본 mock은 그쪽에서 5xx를 주지 않으므로 retries는
+    // 정확히 1 (probe의 한 번)이어야 한다.
+    assert.equal(result.retries, 1);
+  });
+
+  it("user-boxes fallback URL honors catalog override; customer-boxes stays hardcoded", async () => {
+    // catalog가 `instance-search`에 다른 urlPattern을 박아둔 환경(버전/테넌트
+    // 분기) 시뮬레이션. customer-boxes는 카탈로그에 없는 신규 path라 항상
+    // 하드코드를 써야 하고, 403 폴백 시의 user-boxes는 catalog override를
+    // 존중해야 한다.
+    const catalog: ApiCatalog = {
+      version: "test",
+      capturedAt: "2026-05-13T00:00:00Z",
+      flexBaseUrl: "https://flex.test",
+      discoveredPages: [],
+      entries: [
+        {
+          id: "instance-search",
+          discoveredFrom: "test",
+          method: "POST",
+          urlPattern: "/api/v9/custom-tenant/approval-document/user-boxes/search",
+          exampleUrl: "/api/v9/custom-tenant/approval-document/user-boxes/search",
+          statusCode: 200,
+          capturedAt: "2026-05-13T00:00:00Z",
+        },
+      ],
+      unclassified: [],
+    };
+    const calls: CapturedFetch[] = [];
+    globalThis.fetch = (async (input: unknown, init?: { method?: string; body?: string }) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ url, method, body: init?.body ? JSON.parse(init.body) : null });
+      // customer probe → 403 → fallback to user-boxes.
+      if (url.includes("/customer-boxes/search")) {
+        return new Response(JSON.stringify({ message: "권한 없음" }), { status: 403 });
+      }
+      // user-boxes 호출은 catalog override URL로 들어와야 한다.
+      if (url.includes("/api/v9/custom-tenant/approval-document/user-boxes/search")) {
+        return new Response(JSON.stringify({ documents: [], total: 0, hasNext: false }), {
+          status: 200,
+        });
+      }
+      return new Response("nf", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await crawlInstances(
+      makeAuth(),
+      makeConfig(),
+      catalog,
+      makeStorage(),
+      makeLogger(),
+    );
+
+    assert.equal(result.boxScope, "user");
+    // customer probe는 하드코드된 path로 나가야 함 — catalog override가
+    // customer 쪽으로 새지 않는다는 보장.
+    const customerProbe = calls.find((c) =>
+      c.url.includes("/action/v3/approval-document/customer-boxes/search"),
+    );
+    assert.ok(customerProbe, "customer probe must use hardcoded path");
+    // 폴백 후 그룹 search는 catalog override를 탄 user-boxes 경로로 가야 함.
+    const overrideHits = calls.filter((c) =>
+      c.url.includes("/api/v9/custom-tenant/approval-document/user-boxes/search"),
+    );
+    assert.ok(overrideHits.length > 0, "user-boxes searches must honor catalog override");
+    // 하드코드 path로 user-boxes 검색이 새지 않았는지 (override가 무시되지 않았는지).
+    const hardcodedUserHits = calls.filter((c) =>
+      c.url.includes("/action/v3/approval-document/user-boxes/search"),
+    );
+    assert.equal(
+      hardcodedUserHits.length, 0,
+      "must not fall back to hardcoded user-boxes path when catalog overrides it",
+    );
+  });
+
+  it("scope probe retries on 429 (rate-limited)", async () => {
+    // 429는 일시적 throttle 신호 → retry 허용. group search와 동일 동작.
+    let probeCalls = 0;
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/customer-boxes/search")) {
+        probeCalls++;
+        if (probeCalls === 1) {
+          return new Response("rate limited", {
+            status: 429,
+            // retry-after 0 — 테스트 속도 위해.
+            headers: { "retry-after": "0" },
+          });
+        }
+        return new Response(JSON.stringify({ documents: [], total: 0, hasNext: false }), {
+          status: 200,
+        });
+      }
+      return new Response("nf", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await crawlInstances(
+      makeAuth(),
+      { ...makeConfig(), maxRetries: 2, requestDelayMs: 0 },
+      null,
+      makeStorage(),
+      makeLogger(),
+    );
+
+    assert.equal(result.boxScope, "customer", "must succeed after 429 retry");
+    assert.ok(probeCalls >= 2, `429 must trigger retry, called ${probeCalls} times`);
+    // 429 retry 1회가 retries 카운터에 잡혀야 한다.
+    assert.equal(result.retries, 1);
+  });
+
+  it("scope probe does not retry on 4xx (e.g. 401 unauthorized) — fast-fail to list-stage error", async () => {
+    // 4xx는 영구 실패로 간주해 backoff 낭비를 피한다. 401은 403과 달리 fallback
+    // 대상도 아니므로 그대로 list-stage catch로 떨어져 listStageOk=false.
+    let probeCalls = 0;
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/customer-boxes/search")) {
+        probeCalls++;
+        return new Response("unauthorized", { status: 401 });
+      }
+      return new Response("nf", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await crawlInstances(
+      makeAuth(),
+      { ...makeConfig(), maxRetries: 3, requestDelayMs: 0 },
+      null,
+      makeStorage(),
+      makeLogger(),
+    );
+
+    assert.equal(probeCalls, 1, "4xx must not be retried");
+    // listStageOk=false 경로 — instance-list 에러 1건.
+    assert.ok(result.errors.find((e) => e.target === "instance-list"));
+    // 401은 fallback 대상도 아니므로 scope가 결정 안 됨 → undefined.
+    assert.equal(result.boxScope, undefined);
+  });
+});
+
+describe("crawlInstances scope-aware migration", () => {
+  beforeEach(() => {
+    globalThis.fetch = ORIGINAL_FETCH;
+  });
+  afterEach(() => {
+    globalThis.fetch = ORIGINAL_FETCH;
+  });
+
+  // 헬퍼: customer-boxes 200 + 빈 응답을 돌려주는 mock. scope 결정은 200이면
+  // customer로 떨어지므로, 이걸로 모든 시나리오의 "정상 scope detection"을 잡는다.
+  function setupCustomerScopeFetch(): { calls: CapturedFetch[] } {
+    const calls: CapturedFetch[] = [];
+    globalThis.fetch = (async (input: unknown, init?: { method?: string; body?: string }) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ url, method, body: init?.body ? JSON.parse(init.body) : null });
+      if (url.includes("/customer-boxes/search") || url.includes("/user-boxes/search")) {
+        return new Response(JSON.stringify({ documents: [], total: 0, hasNext: false }), {
+          status: 200,
+        });
+      }
+      return new Response("nf", { status: 404 });
+    }) as typeof fetch;
+    return { calls };
+  }
+
+  it("missing lastCrawledBoxScope on existing watermark forces full this cycle (migration path)", async () => {
+    // user-boxes 시절 운영하던 환경 시뮬레이션 — 워터마크는 있는데 scope 필드는 없음.
+    const initial: WatermarkFile = {
+      approvalDocuments: {
+        groups: {
+          done: {
+            lastUpdatedAt: "2026-04-25T03:00:00Z",
+            overlapDays: 2,
+            lastSuccessfulRunAt: "2026-04-30T00:00:00Z",
+          },
+        },
+      },
+    };
+    const { calls } = setupCustomerScopeFetch();
+    const storage = makeStorage(initial);
+
+    const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    // scope mismatch 감지 → effectiveFull → 어느 그룹도 lastUpdatedDateRange를 안 보냄.
+    for (const c of calls.filter(isRealSearchCall)) {
+      const filter = (c.body as { filter: Record<string, unknown> }).filter;
+      assert.ok(
+        !("lastUpdatedDateRange" in filter),
+        `migration cycle must not narrow with lastUpdatedDateRange, got ${JSON.stringify(filter)}`,
+      );
+    }
+    // 새 scope이 박혀야 함 → 다음 run은 정상 incremental.
+    assert.equal(result.boxScope, "customer");
+    assert.equal(
+      storage._watermarks.approvalDocuments?.lastCrawledBoxScope,
+      "customer",
+    );
+    // full recon로 처리됐으니 lastFullReconAt도 갱신.
+    assert.ok(storage._watermarks.approvalDocuments?.lastFullReconAt);
+  });
+
+  it("matching lastCrawledBoxScope keeps incremental (no force-full)", async () => {
+    const initial: WatermarkFile = {
+      approvalDocuments: {
+        lastCrawledBoxScope: "customer",
+        groups: {
+          done: {
+            lastUpdatedAt: "2026-04-25T03:00:00Z",
+            overlapDays: 2,
+            lastSuccessfulRunAt: "2026-04-30T00:00:00Z",
+          },
+        },
+      },
+    };
+    const { calls } = setupCustomerScopeFetch();
+
+    await crawlInstances(makeAuth(), makeConfig(), null, makeStorage(initial), makeLogger());
+
+    // done 그룹은 dateRange를 받아야 한다 (= incremental 유지).
+    const doneCall = calls.find(
+      (c) =>
+        isRealSearchCall(c) &&
+        (c.body as { filter: { statuses: string[] } }).filter.statuses.includes("DONE"),
+    );
+    assert.ok(doneCall);
+    const filter = (doneCall.body as { filter: Record<string, unknown> }).filter;
+    assert.ok(
+      "lastUpdatedDateRange" in filter,
+      "matching scope must preserve incremental behavior",
+    );
+  });
+
+  it("scope change customer→user (admin revoked) forces full this cycle", async () => {
+    const initial: WatermarkFile = {
+      approvalDocuments: {
+        lastCrawledBoxScope: "customer",
+        groups: {
+          done: {
+            lastUpdatedAt: "2026-04-25T03:00:00Z",
+            overlapDays: 2,
+            lastSuccessfulRunAt: "2026-04-30T00:00:00Z",
+          },
+        },
+      },
+    };
+    // customer-boxes는 403 → user-boxes로 폴백. 즉 boxScope는 "user".
+    const calls: CapturedFetch[] = [];
+    globalThis.fetch = (async (input: unknown, init?: { method?: string; body?: string }) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ url, method, body: init?.body ? JSON.parse(init.body) : null });
+      if (url.includes("/customer-boxes/search")) {
+        return new Response(JSON.stringify({ message: "권한 없음" }), { status: 403 });
+      }
+      if (url.includes("/user-boxes/search")) {
+        return new Response(JSON.stringify({ documents: [], total: 0, hasNext: false }), {
+          status: 200,
+        });
+      }
+      return new Response("nf", { status: 404 });
+    }) as typeof fetch;
+    const storage = makeStorage(initial);
+
+    const result = await crawlInstances(makeAuth(), makeConfig(), null, storage, makeLogger());
+
+    assert.equal(result.boxScope, "user");
+    // mismatch → full → done 그룹도 dateRange 없이 전수.
+    const doneCall = calls.find(
+      (c) =>
+        isRealSearchCall(c) &&
+        (c.body as { filter: { statuses: string[] } }).filter.statuses.includes("DONE"),
+    );
+    assert.ok(doneCall);
+    const filter = (doneCall.body as { filter: Record<string, unknown> }).filter;
+    assert.ok(
+      !("lastUpdatedDateRange" in filter),
+      "scope downgrade must trigger a full sweep, not incremental",
+    );
+    // 새 scope 박힘 → 이후로는 user 스코프에서 incremental 유지.
+    assert.equal(
+      storage._watermarks.approvalDocuments?.lastCrawledBoxScope,
+      "user",
+    );
+  });
+
+  it("partial-failure cycle does NOT commit lastCrawledBoxScope (preserves self-heal)", async () => {
+    // scope=customer로 떨어지지만 detail 1건이 실패하는 시나리오. failureCount>0 이면
+    // 스코프가 안 박혀야 한다 — 그래야 다음 run에서 같은 mismatch 경로가 다시
+    // 트리거되어 자가복구가 막히지 않는다.
+    const initial: WatermarkFile = {
+      approvalDocuments: {
+        // scope 필드 없음 — migration trigger 상태로 시작.
+        groups: {
+          done: {
+            lastUpdatedAt: "2026-04-25T03:00:00Z",
+            overlapDays: 2,
+            lastSuccessfulRunAt: "2026-04-30T00:00:00Z",
+          },
+        },
+      },
+    };
+    const calls: CapturedFetch[] = [];
+    globalThis.fetch = (async (input: unknown, init?: { method?: string; body?: string }) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ url, method, body: init?.body ? JSON.parse(init.body) : null });
+      if (url.includes("/customer-boxes/search")) {
+        if (/[?&]size=1(?:&|$)/.test(url)) {
+          // scope probe — 200 빈 응답.
+          return new Response(JSON.stringify({ documents: [], total: 0, hasNext: false }), {
+            status: 200,
+          });
+        }
+        // 실제 search — done 그룹에 1건 반환.
+        const body = init?.body ? JSON.parse(init.body) : null;
+        const statuses = body?.filter?.statuses ?? [];
+        if (statuses.includes("DONE")) {
+          return new Response(
+            JSON.stringify({
+              documents: [{ document: { documentKey: "boom" } }],
+              total: 1,
+              hasNext: false,
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ documents: [], total: 0, hasNext: false }), {
+          status: 200,
+        });
+      }
+      // detail GET → 500. failureCount=1.
+      return new Response("server error", { status: 500 });
+    }) as typeof fetch;
+    const storage = makeStorage(initial);
+
+    const result = await crawlInstances(
+      makeAuth(),
+      { ...makeConfig(), maxRetries: 0 },
+      null,
+      storage,
+      makeLogger(),
+    );
+
+    assert.ok(result.failureCount > 0, "test setup must produce at least one detail failure");
+    // 부분 실패 cycle — scope 미커밋.
+    assert.equal(
+      storage._watermarks.approvalDocuments?.lastCrawledBoxScope,
+      undefined,
+      "scope must not be committed on partial-failure cycle (self-heal preservation)",
     );
   });
 });
