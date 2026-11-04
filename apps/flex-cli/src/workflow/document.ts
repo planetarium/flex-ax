@@ -1,5 +1,6 @@
 import type { AuthContext } from "../auth/index.js";
-import { postJson } from "./http.js";
+import { getJson, postJson } from "./http.js";
+import type { DraftDetail } from "./draft-check.js";
 import type { ApprovalLine, Referrer, ResolvedPolicy, UploadedAttachment } from "./types.js";
 
 /**
@@ -123,6 +124,21 @@ function pickPermFileKey(
   const byName = resp.find((r) => r.file?.fileName === expectedName && r.file?.fileKey);
   if (byName?.file?.fileKey) return byName.file.fileKey;
   return direct?.file?.fileKey;
+}
+
+/**
+ * 문서 상세를 다시 읽는다 — `submit --document-key` 가 상신 직전에 draft 상태를 확인하는 데 쓴다.
+ * 없는 문서면 서버가 4xx(HttpError)를 던지고, 호출자가 status 로 분기한다.
+ */
+export async function getDocument(
+  authCtx: AuthContext,
+  baseUrl: string,
+  documentKey: string,
+): Promise<DraftDetail> {
+  return getJson<DraftDetail>(
+    authCtx,
+    `${baseUrl}/api/v3/approval-document/approval-documents/${encodeURIComponent(documentKey)}`,
+  );
 }
 
 /**

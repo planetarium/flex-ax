@@ -14,10 +14,13 @@ import { resolvePolicy } from "../workflow/policy.js";
 import { uploadAttachment } from "../workflow/file.js";
 import {
   createDraft,
+  getDocument,
   registerAttachments,
   submitDocument,
   type DocumentPayload,
 } from "../workflow/document.js";
+import { checkDraftForSubmit, type DraftCheck } from "../workflow/draft-check.js";
+import { HttpError } from "../auth/index.js";
 import {
   readInputFile,
   renderInputTemplate,
@@ -71,6 +74,8 @@ Subcommands:
   templates                       작성 가능한 양식 목록 출력
   describe <key|이름> [> file]    양식 명세를 입력 YAML 형태로 출력
   submit <file>                   채운 YAML로 결재 문서 작성/제출
+  submit <file> --document-key <key>
+                                  이미 임시저장된 문서를 그 YAML 내용 그대로 상신 (새 문서를 만들지 않음)
   list                            결재 문서 목록 조회
   show <documentKey>              결재 문서 상세 조회
   status <documentKey>            결재 상태/결재선 요약 조회
@@ -80,6 +85,10 @@ Options (모든 서브커맨드 공통):
   --customer <customerIdHash>     다중 법인일 때 대상 법인 지정
   --draft                         (submit 전용) 임시저장까지만 (제출 호출 생략)
   --dry-run                       (submit 전용) 호출하지 않고 페이로드만 stdout
+                                  (--document-key 와 함께면 draft 확인(조회)까지만 하고 상신은 생략)
+  --document-key <key>            (submit 전용) 기존 draft에 상신. 상신 전 문서를 다시 읽어
+                                  없으면 종료코드 4, 이미 상신됐으면 5, 양식이 다르거나 제목·입력값이
+                                  YAML과 다르면(UI에서 수정됨) 6 으로 거부한다
 
 ${getWorkflowReadUsage("workflow")}
 
@@ -87,6 +96,7 @@ Examples:
   flex-ax workflow templates
   flex-ax workflow describe "비용 결제 요청" > request.yaml
   flex-ax workflow submit ./request.yaml --draft
+  flex-ax workflow submit ./request.yaml --document-key 8d2f...
   flex-ax workflow list --box in-progress
   flex-ax workflow status 8d2f...
 `);
@@ -94,19 +104,26 @@ Examples:
 
 // --- 옵션 파서 (각 서브커맨드 공통) ---
 
-interface CommonOpts {
+export interface CommonOpts {
   customer?: string;
   draft: boolean;
   dryRun: boolean;
+  documentKey?: string;
   positional: string[];
 }
 
-function parseOpts(args: string[]): CommonOpts {
+export function parseOpts(args: string[]): CommonOpts {
   const opts: CommonOpts = { draft: false, dryRun: false, positional: [] };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--customer") {
       opts.customer = args[++i];
+    } else if (a === "--document-key") {
+      const v = args[++i];
+      if (!v || v.startsWith("--")) {
+        throw new Error("--document-key 에 documentKey를 지정하세요.");
+      }
+      opts.documentKey = v;
     } else if (a === "--draft") {
       opts.draft = true;
     } else if (a === "--dry-run") {
@@ -215,8 +232,17 @@ async function cmdSubmit(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  if (opts.documentKey && opts.draft) {
+    logger.error("--document-key 와 --draft 는 함께 쓸 수 없습니다 (이미 임시저장된 문서를 상신하는 옵션)");
+    process.exit(1);
+  }
+
   // 파일 먼저 읽고 검증 — 인증 실패보다 입력 검증 실패가 먼저 보이는 게 디버깅 친화적.
   const input = await readInputFile(filePath);
+  if (opts.documentKey && input.attachments.length > 0) {
+    logger.error("--document-key 로 상신할 때는 attachments 를 지원하지 않습니다 (draft에 이미 등록된 첨부를 쓰세요)");
+    process.exit(1);
+  }
 
   const { authCtx, config } = await setupAuth(opts, logger);
   try {
@@ -227,6 +253,11 @@ async function cmdSubmit(args: string[]): Promise<void> {
 
     const payload = buildPayload(input, policy);
     validateRequiredFields(input, policy);
+
+    if (opts.documentKey) {
+      await submitExistingDraft(authCtx, config.flexBaseUrl, opts.documentKey, payload, opts.dryRun, logger);
+      return;
+    }
 
     if (opts.dryRun) {
       // dry-run은 attachments 업로드도 건너뛴다 — 호출 0건. 페이로드 모양만 stdout으로 덤프.
@@ -273,6 +304,71 @@ async function cmdSubmit(args: string[]): Promise<void> {
   } finally {
     await cleanup(authCtx);
   }
+}
+
+// --- 기존 draft 상신 (--document-key) ---
+
+/** 거부 사유 → 종료 코드. 호출자(봇 등)가 출력 문구 대신 코드로 분기할 수 있게 고정한다. */
+export const DRAFT_REFUSAL_EXIT: Record<"missing" | "submitted" | "template" | "modified", number> = {
+  missing: 4,
+  submitted: 5,
+  template: 6,
+  modified: 6,
+};
+
+/**
+ * 없는(삭제된) 문서 응답인지. flex 는 없는 documentKey 에 404 가 아니라
+ * 400 + `code: "WORKFLOW_400_023"`("문서를 찾을 수 없습니다.")를 준다 (2026-11-04 실측).
+ * 404/410 도 같이 받는다. 그 밖의 4xx/5xx 는 일시 오류일 수 있어 그대로 던진다.
+ */
+export const MISSING_DOCUMENT_CODE = "WORKFLOW_400_023";
+
+export function isMissingDocumentError(error: unknown): boolean {
+  if (!(error instanceof HttpError)) return false;
+  if (error.status === 404 || error.status === 410) return true;
+  if (error.status !== 400) return false;
+  try {
+    const body = JSON.parse(error.body) as { code?: unknown };
+    return body?.code === MISSING_DOCUMENT_CODE;
+  } catch {
+    return false;
+  }
+}
+
+async function submitExistingDraft(
+  authCtx: AuthContext,
+  baseUrl: string,
+  documentKey: string,
+  payload: DocumentPayload,
+  dryRun: boolean,
+  logger: Logger,
+): Promise<void> {
+  let check: DraftCheck | { ok: false; reason: "missing"; detail: string };
+  try {
+    const detail = await getDocument(authCtx, baseUrl, documentKey);
+    check = checkDraftForSubmit(detail, payload);
+  } catch (error) {
+    if (!isMissingDocumentError(error)) throw error;
+    check = { ok: false, reason: "missing", detail: `HTTP ${(error as HttpError).status}` };
+  }
+
+  if (!check.ok) {
+    logger.error("기존 draft 상신 거부", { reason: check.reason, documentKey, detail: check.detail });
+    console.log(`[FLEX-AX:WORKFLOW] 상신 거부: reason=${check.reason} documentKey=${documentKey}`);
+    await cleanup(authCtx);
+    process.exit(DRAFT_REFUSAL_EXIT[check.reason]);
+  }
+
+  if (dryRun) {
+    console.log(`[FLEX-AX:WORKFLOW] dry-run: draft 확인 통과, 상신은 생략 documentKey=${documentKey}`);
+    console.log(JSON.stringify(serializeForDryRun(payload, []), null, 2));
+    return;
+  }
+
+  const result = await submitDocument(authCtx, baseUrl, documentKey, payload);
+  console.log(
+    `[FLEX-AX:WORKFLOW] 제출 완료: code=${result.code} status=${result.status} documentKey=${result.documentKey}`,
+  );
 }
 
 // --- payload 빌더 ---
