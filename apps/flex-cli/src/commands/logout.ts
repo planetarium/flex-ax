@@ -1,6 +1,6 @@
 import { loadConfig } from "../config/index.js";
 import { createLogger } from "../logger/index.js";
-import { deleteLegacyPassword, deleteSession } from "../auth/session.js";
+import { deleteLegacyPassword, deleteSession, withSessionLock } from "../auth/session.js";
 import { confirmGuiLogout, GuiUnavailableError } from "../gui/dialogs.js";
 
 export async function runLogout(argv: string[] = process.argv.slice(3)): Promise<void> {
@@ -40,8 +40,10 @@ export async function runLogout(argv: string[] = process.argv.slice(3)): Promise
   }
 
   // 비밀번호 로그인 시절 키링 항목도 함께 지운다
-  const removedSession = deleteSession(config.flexEmail);
-  const removedLegacy = deleteLegacyPassword(config.flexEmail);
+  // 진행 중인 갱신이 끝난 뒤 지운다 — 잠금 밖에서 지우면 갱신 결과가 로그아웃 뒤에 다시 저장될 수 있다
+  const email = config.flexEmail;
+  const removedSession = await withSessionLock(async () => deleteSession(email));
+  const removedLegacy = deleteLegacyPassword(email);
   if (removedSession || removedLegacy) {
     console.log(`[FLEX-AX:LOGOUT] 로그인 세션 삭제: ${config.flexEmail}`);
   } else {

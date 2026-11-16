@@ -127,7 +127,7 @@ const ACCESS_REUSE_MIN_REMAINING_MS = 60 * 60 * 1000;
 /**
  * 저장된 access token이 아직 넉넉히 남았으면 가벼운 조회 한 번으로 살아 있는지 확인하고 그대로 쓴다.
  * 갱신하면 이전 access token이 즉시 무효가 되어(2026-11-16 실측) 동시에 도는 다른 실행이 401을 받기 때문.
- * 확인에 실패하면 null — 호출자가 refresh로 넘어간다.
+ * 토큰이 거절되면 null — 호출자가 refresh로 넘어간다. 그 밖의 오류는 그대로 던진다.
  */
 async function reuseAccessToken(baseUrl: string, session: StoredSession): Promise<AuthContext | null> {
   if (!session.accessToken || !session.accessExpireAt) return null;
@@ -137,8 +137,11 @@ async function reuseAccessToken(baseUrl: string, session: StoredSession): Promis
       `${baseUrl}/api-public/v2/auth/tokens/customer-user`,
       baseHeaders(session.deviceId, { "flexteam-v2-workspace-access": session.accessToken }),
     );
-  } catch {
-    return null;
+  } catch (error) {
+    // 토큰이 거절된 경우에만 refresh로 넘긴다. 500·429·네트워크 오류에 refresh하면
+    // 아직 유효한 토큰을 쓰고 있는 다른 실행의 access token까지 무효가 된다.
+    if (isSessionRejected(error)) return null;
+    throw error;
   }
   return {
     baseUrl,

@@ -45,14 +45,17 @@ export interface PendingLogin {
 }
 
 const KEYRING_SERVICE = "flex-ax";
-const DEFAULT_DIR = join(homedir(), ".flex-ax");
+/** 호출 시점에 해석 — HOME을 바꾼 실행(테스트·전용 HOME으로 띄운 서버)에서도 그 폴더를 쓴다 */
+function defaultDir(): string {
+  return join(process.env.HOME || homedir(), ".flex-ax");
+}
 
 function sessionAccount(email: string): string {
   return `session:${email}`;
 }
 
 export function getSessionFilePath(): string {
-  return process.env.FLEX_SESSION_FILE || join(DEFAULT_DIR, "session.json");
+  return process.env.FLEX_SESSION_FILE || join(defaultDir(), "session.json");
 }
 
 function getPendingFilePath(): string {
@@ -174,8 +177,10 @@ export function loadSession(email: string): { session: StoredSession; source: Se
  */
 export function saveSession(email: string, session: StoredSession, logger: Logger): boolean {
   if (!forceFile()) {
-    const entry = new Entry(KEYRING_SERVICE, sessionAccount(email));
+    // Entry 생성도 실패할 수 있다(Linux 백엔드 생성 오류 등) — 생성까지 try 안에 두어 파일 폴백에 닿게 한다
+    let entry: Entry | null = null;
     try {
+      entry = new Entry(KEYRING_SERVICE, sessionAccount(email));
       entry.setPassword(JSON.stringify(session));
       // 예전에 파일 폴백으로 저장된 값이 남아 있으면 오래된 토큰이 다시 읽히지 않게 지운다
       writeToFile(email, null);
@@ -183,7 +188,7 @@ export function saveSession(email: string, session: StoredSession, logger: Logge
     } catch {
       // 키링에 남은 이전 토큰이 파일의 새 토큰보다 먼저 읽히지 않게 지운다
       try {
-        entry.deletePassword();
+        entry?.deletePassword();
       } catch {
         // 없음
       }

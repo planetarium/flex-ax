@@ -169,6 +169,20 @@ describe("authenticate", () => {
     assert.equal(loadSession(EMAIL)?.session.refreshToken, "ref");
   });
 
+  it("does not refresh when checking a live access token fails transiently", async () => {
+    const later = new Date(Date.now() + 6 * 3600_000).toISOString();
+    for (const status of [429, 500]) {
+      saveSession(EMAIL, { refreshToken: "ref", refreshExpireAt: later, deviceId: "d", accessToken: "acc-live", accessExpireAt: later }, silentLogger);
+      const calls = mockFetch({
+        "/api-public/v2/auth/tokens/customer-user": { status },
+        "/api-public/v2/auth/tokens/workspace/refresh": tokens("acc-new", "ref-new"),
+      });
+      await assert.rejects(authenticate(makeConfig(), silentLogger), HttpError);
+      assert.ok(!calls.some((c) => c.url.endsWith("/tokens/workspace/refresh")));
+      assert.equal(loadSession(EMAIL)?.session.accessToken, "acc-live");
+    }
+  });
+
   it("refreshes when the stored access token is rejected or about to expire", async () => {
     const later = new Date(Date.now() + 6 * 3600_000).toISOString();
     const soon = new Date(Date.now() + 10 * 60_000).toISOString();
@@ -252,5 +266,31 @@ describe("concurrent runs", () => {
     assert.equal(n, 1);
     assert.deepEqual(results.map((c) => c.workspaceToken), ["acc-1", "acc-1", "acc-1"]);
     assert.equal(loadSession(EMAIL)?.session.refreshToken, "t1");
+  });
+});
+
+describe("logout", () => {
+  it("waits for an in-flight refresh so the session is not saved back after logout", async () => {
+    saveSession(EMAIL, { refreshToken: "t0", refreshExpireAt: "2026-11-20T00:00:00Z", deviceId: "d" }, silentLogger);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let started!: () => void;
+    const refreshStarted = new Promise<void>((r) => (started = r));
+    globalThis.fetch = (async () => {
+      started();
+      await gate;
+      return new Response(JSON.stringify(tokens("acc-1", "t1")), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const auth = authenticate(makeConfig(), silentLogger);
+    await refreshStarted;
+    process.env.FLEX_EMAIL = EMAIL;
+    const { runLogout } = await import("../commands/logout.js");
+    const logout = runLogout([]);
+    release();
+    await Promise.all([auth, logout]);
+    delete process.env.FLEX_EMAIL;
+
+    assert.equal(loadSession(EMAIL), null);
   });
 });
