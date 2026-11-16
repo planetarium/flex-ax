@@ -1,25 +1,44 @@
 import { loadConfig } from "../config/index.js";
-import { saveGlobalConfig, getGlobalConfigPath } from "../config/global-config.js";
+import { saveGlobalConfig, getGlobalConfigPath, loadGlobalConfig } from "../config/global-config.js";
 import { createLogger } from "../logger/index.js";
-import { performLogin } from "../auth/index.js";
-import { promptLine, promptPassword, readFromKeyring, saveToKeyring } from "../auth/credentials.js";
-import { confirmGuiOverwrite, GuiUnavailableError, promptGuiCredentials } from "../gui/dialogs.js";
+import { requestEmailCode, toStoredSession, verifyEmailCode } from "../auth/index.js";
+import { promptLine } from "../auth/credentials.js";
+import {
+  deleteLegacyPassword,
+  deletePending,
+  getSessionFilePath,
+  loadPending,
+  savePending,
+  saveSession,
+} from "../auth/session.js";
+import { GuiUnavailableError, promptGuiCode, promptGuiEmail } from "../gui/dialogs.js";
+
+type Logger = ReturnType<typeof createLogger>;
 
 /**
- * 이메일 + 비밀번호를 받아 실제 5단계 로그인까지 통과하면
+ * 이메일 인증 코드로 로그인해 refresh token을 저장한다 (flex는 2026-11-11부터 비밀번호 로그인 폐지).
  *   - 이메일은 `~/.flex-ax/config.json`
- *   - 비밀번호는 OS 키링 (service=flex-ax, account=email)
- * 에 저장한다.
+ *   - 세션(refresh token)은 OS 키링 또는 세션 파일 (auth/session.ts)
  *
- * 비대화식 흐름(에이전트/CI):
- *   - FLEX_EMAIL/FLEX_PASSWORD env에 둘 다 있으면 프롬프트 없이 바로 진행
- *   - `--password-stdin` 플래그로 비밀번호를 stdin 파이프로 주입 가능
- *   - 비밀번호는 명시적 명령행 인자(`--password XXX`)로는 받지 않는다 — shell history/ps 노출 방지
+ * 비대화식 흐름(에이전트/서버) — 두 단계로 나눈다:
+ *   1) `flex-ax login --request-code` : 코드 메일 발송, 로그인 세션을 pending-login.json 에 보관
+ *   2) `flex-ax login --code <코드>`   : 받은 코드로 로그인 완료
+ * 코드는 5분 안에 한 번만 쓸 수 있어 명령행 인자로 받아도 재사용 위험이 없다.
  */
 export async function runLogin(argv: string[] = process.argv.slice(3)): Promise<void> {
   const logger = createLogger("LOGIN");
-  const passwordFromStdin = argv.includes("--password-stdin");
   const useGui = argv.includes("--gui");
+  const requestOnly = argv.includes("--request-code");
+  const codeIdx = argv.indexOf("--code");
+  const codeArg = codeIdx >= 0 ? argv[codeIdx + 1] : undefined;
+  if (codeIdx >= 0 && (!codeArg || codeArg.startsWith("--"))) {
+    logger.error("--code 뒤에 메일로 받은 인증 코드를 적어 주세요.");
+    process.exit(1);
+  }
+  if ([useGui, requestOnly, codeArg !== undefined].filter(Boolean).length > 1) {
+    logger.error("--gui, --request-code, --code 는 함께 사용할 수 없습니다.");
+    process.exit(1);
+  }
 
   let config;
   try {
@@ -31,130 +50,117 @@ export async function runLogin(argv: string[] = process.argv.slice(3)): Promise<
     process.exit(1);
   }
 
-  const isTTY = process.stdin.isTTY === true;
-
-  if (useGui) {
-    if (passwordFromStdin) {
-      logger.error("--gui와 --password-stdin은 함께 사용할 수 없습니다.");
-      process.exit(1);
-    }
-    await runGuiLogin(config.flexEmail, config.flexBaseUrl, logger);
+  if (codeArg !== undefined) {
+    await completePendingLogin(codeArg, logger);
     return;
   }
 
-  if (passwordFromStdin && isTTY) {
-    logger.error("--password-stdin은 stdin이 파이프로 주입될 때 사용하세요. 대화형 셸이라면 옵션을 빼거나 echo/here-doc으로 파이프하세요.");
-    process.exit(1);
-  }
-
-  // 1) 이메일 — env > 글로벌 config > 프롬프트(TTY) > 에러
+  // 이메일 — env > 글로벌 config > (GUI 대화상자 | TTY 프롬프트) > 에러
   let email = config.flexEmail;
-  let emailWasPrompted = false;
-  if (!email) {
-    if (!isTTY) {
+  if (useGui) {
+    try {
+      email = (await promptGuiEmail(email)).trim();
+    } catch (error) {
+      exitOnGuiError(error, logger);
+    }
+  } else if (!email) {
+    if (requestOnly || process.stdin.isTTY !== true) {
       logger.error(
         "이메일을 찾을 수 없습니다 — 비대화식 환경에서는 FLEX_EMAIL env 또는 ~/.flex-ax/config.json 의 email이 필요합니다.",
       );
       process.exit(1);
     }
     email = await promptLine("[FLEX-AX:LOGIN] 이메일: ");
-    if (!email) {
-      logger.error("이메일 입력이 비어있습니다.");
-      process.exit(1);
-    }
-    emailWasPrompted = true;
   }
-
-  // 2) 비밀번호 — env > stdin(--password-stdin) > 프롬프트(TTY) > 에러
-  let password: string | null = null;
-  if (config.flexPassword) {
-    password = config.flexPassword;
-  } else if (passwordFromStdin) {
-    password = (await readAllStdin()).replace(/\r?\n$/, "");
-    if (!password) {
-      logger.error("--password-stdin으로 빈 입력이 들어왔습니다.");
-      process.exit(1);
-    }
-  } else if (isTTY) {
-    password = await promptPassword(`[FLEX-AX:LOGIN] ${email} 비밀번호: `);
-    if (!password) {
-      logger.error("비밀번호 입력이 비어있습니다.");
-      process.exit(1);
-    }
-  } else {
-    logger.error(
-      "비밀번호를 찾을 수 없습니다 — 비대화식 환경에서는 FLEX_PASSWORD env 또는 `--password-stdin` 으로 주입하세요.",
-    );
+  if (!email) {
+    logger.error("이메일 입력이 비어있습니다.");
     process.exit(1);
   }
 
-  // 3) 검증 — 실제 로그인 통과해야만 저장
+  let pending;
   try {
-    await performLogin(config.flexBaseUrl, email, password, logger);
+    pending = await requestEmailCode(config.flexBaseUrl, email, logger);
   } catch (error) {
-    logger.error("로그인 검증 실패 — 키링/글로벌 config에 저장하지 않았습니다", {
+    logger.error("인증 코드 요청 실패", {
       error: error instanceof Error ? error.message : String(error),
     });
     process.exit(1);
   }
 
-  if (emailWasPrompted) {
-    saveGlobalConfig({ email });
+  if (requestOnly) {
+    savePending(pending);
+    console.log(`[FLEX-AX:LOGIN] 메일로 받은 코드로 \`flex-ax login --code <코드>\` 를 실행하세요 (만료 ${pending.codeExpiresAt}).`);
+    return;
+  }
+
+  let code = "";
+  if (useGui) {
+    try {
+      code = await promptGuiCode(email);
+    } catch (error) {
+      exitOnGuiError(error, logger);
+    }
+  } else if (process.stdin.isTTY === true) {
+    code = await promptLine(`[FLEX-AX:LOGIN] ${email} 로 받은 인증 코드: `);
+  } else {
+    logger.error("TTY가 아니라 코드를 입력받을 수 없습니다 — `--request-code` 와 `--code` 를 사용하세요.");
+    process.exit(1);
+  }
+  if (!code.trim()) {
+    logger.error("인증 코드 입력이 비어있습니다.");
+    process.exit(1);
+  }
+
+  await finishLogin(pending, code, logger);
+}
+
+async function completePendingLogin(code: string, logger: Logger): Promise<void> {
+  const pending = loadPending();
+  if (!pending) {
+    logger.error("대기 중인 로그인이 없습니다 — 먼저 `flex-ax login --request-code` 를 실행하세요.");
+    process.exit(1);
+  }
+  if (Date.parse(pending.codeExpiresAt) < Date.now()) {
+    deletePending();
+    logger.error("인증 코드가 만료됐습니다 — `flex-ax login --request-code` 부터 다시 하세요.");
+    process.exit(1);
+  }
+  await finishLogin(pending, code, logger);
+  deletePending();
+}
+
+async function finishLogin(
+  pending: Parameters<typeof verifyEmailCode>[0],
+  code: string,
+  logger: Logger,
+): Promise<void> {
+  let result;
+  try {
+    result = await verifyEmailCode(pending, code, logger);
+  } catch (error) {
+    logger.error("로그인 실패 — 세션을 저장하지 않았습니다", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    process.exit(1);
+  }
+
+  if (loadGlobalConfig().email !== pending.email) {
+    saveGlobalConfig({ email: pending.email });
     console.log(`[FLEX-AX:LOGIN] 이메일 저장: ${getGlobalConfigPath()}`);
   }
-  saveToKeyring(email, password, logger);
-  console.log(`[FLEX-AX:LOGIN] 완료 — 이후 crawl/check-apis 실행 시 자동으로 사용됩니다.`);
+  saveSession(pending.email, toStoredSession(result), logger);
+  // 비밀번호 로그인 시절 키링에 남긴 비밀번호는 더 쓰지 않는다
+  deleteLegacyPassword(pending.email);
+  const where = process.env.FLEX_SESSION_FILE ? getSessionFilePath() : "OS 키링(불가 시 세션 파일)";
+  console.log(
+    `[FLEX-AX:LOGIN] 완료 — 세션 저장: ${where}, 만료 ${result.refreshExpireAt} (실행할 때마다 7일 연장)`,
+  );
 }
 
-async function runGuiLogin(defaultEmail: string, baseUrl: string, logger: ReturnType<typeof createLogger>): Promise<void> {
-  let credentials;
-  try {
-    credentials = await promptGuiCredentials(defaultEmail);
-  } catch (error) {
-    if (error instanceof GuiUnavailableError) {
-      logger.error(error.message);
-      process.exit(1);
-    }
-    throw error;
-  }
-
-  const existing = readFromKeyring(credentials.email);
-  if (existing !== null) {
-    let shouldOverwrite = false;
-    try {
-      shouldOverwrite = await confirmGuiOverwrite(credentials.email);
-    } catch (error) {
-      if (error instanceof GuiUnavailableError) {
-        logger.error(error.message);
-        process.exit(1);
-      }
-      throw error;
-    }
-    if (!shouldOverwrite) {
-      console.log("[FLEX-AX:LOGIN] 취소됨 — 기존 키링 항목을 유지했습니다.");
-      return;
-    }
-  }
-
-  try {
-    await performLogin(baseUrl, credentials.email, credentials.password, logger);
-  } catch (error) {
-    logger.error("로그인 검증 실패 — 키링/글로벌 config에 저장하지 않았습니다", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+function exitOnGuiError(error: unknown, logger: Logger): never {
+  if (error instanceof GuiUnavailableError) {
+    logger.error(error.message);
     process.exit(1);
   }
-
-  saveGlobalConfig({ email: credentials.email });
-  console.log(`[FLEX-AX:LOGIN] 이메일 저장: ${getGlobalConfigPath()}`);
-  saveToKeyring(credentials.email, credentials.password, logger);
-  console.log("[FLEX-AX:LOGIN] 완료 — 이후 crawl/check-apis 실행 시 자동으로 사용됩니다.");
-}
-
-async function readAllStdin(): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-  }
-  return Buffer.concat(chunks).toString("utf8");
+  throw error;
 }

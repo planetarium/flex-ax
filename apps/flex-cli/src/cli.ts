@@ -27,7 +27,7 @@ Multi-export query:
 
 Env:
   FLEX_EMAIL
-  FLEX_PASSWORD
+  FLEX_SESSION_FILE
   FLEX_BASE_URL
   FLEX_CUSTOMERS
   FLEX_CRAWL_MODE=incremental|full   (default: incremental — 워터마크 없으면 부트스트랩 풀크롤)
@@ -73,12 +73,12 @@ async function runDelegatedCommand(
   await runner(args);
 }
 
-addPassthroughCommand(program, "login", "이메일/비밀번호 등록", async (args) => {
+addPassthroughCommand(program, "login", "이메일 인증 코드로 로그인", async (args) => {
   const { runLogin } = await import("./commands/login.js");
   await runLogin(args);
 });
 
-addPassthroughCommand(program, "logout", "OS 키링에서 비밀번호 삭제", async (args) => {
+addPassthroughCommand(program, "logout", "저장된 로그인 세션 삭제", async (args) => {
   const { runLogout } = await import("./commands/logout.js");
   await runLogout(args);
 });

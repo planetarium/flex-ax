@@ -1,12 +1,12 @@
 const TOP_LEVEL_COMMANDS = `Commands:
-  login           이메일/비밀번호 등록 (이메일은 ~/.flex-ax/config.json,
-                  비밀번호는 OS 키링; 검증 후 저장)
-                  비대화식: FLEX_EMAIL/FLEX_PASSWORD env 또는
-                  --password-stdin 으로 stdin 파이프 입력 가능
+  login           이메일 인증 코드로 로그인 (이메일은 ~/.flex-ax/config.json,
+                  세션은 OS 키링; 실행할 때마다 7일 연장)
+                  비대화식: --request-code 로 코드 메일 발송 후
+                  --code <코드> 로 완료
                   --gui 로 플랫폼 기본 대화상자 사용 가능
-  logout          OS 키링에서 비밀번호 삭제 (글로벌 config의 이메일은 보존)
+  logout          저장된 로그인 세션 삭제 (글로벌 config의 이메일은 보존)
                   --gui 로 삭제 확인 대화상자 사용 가능
-  status          현재 등록 상태 표시 (비밀번호 값은 마스킹)
+  status          현재 로그인 상태 표시 (세션 유무·만료, 토큰 값은 숨김)
   crawl           카탈로그 기반 크롤링 → output/ 저장
   import          크롤링 결과(JSON) → SQLite DB 변환
   query "SQL"     DB 쿼리 실행 → JSON 출력 (read-only)
@@ -34,14 +34,15 @@ Multi-export query:
 Options:
   --version, -v       버전 출력
   --help, -h          도움말 출력
-  --password-stdin    (login 전용) 비밀번호를 stdin 파이프로 주입
+  --request-code      (login 전용) 인증 코드 메일만 보내고 종료
+  --code <코드>        (login 전용) --request-code 로 받은 코드로 로그인 완료
   --gui               (login/logout 전용) 플랫폼 기본 대화상자 사용
 
 Env:
   FLEX_EMAIL                  선택 — 지정 시 글로벌 config보다 우선
                               (평소엔 flex-ax login 으로 한 번만 등록)
-  FLEX_PASSWORD               선택 — 지정 시 키링/프롬프트보다 우선
-                              (CI에서 사용)
+  FLEX_SESSION_FILE           선택 — 로그인 세션을 키링 대신 이 파일(0600)에 저장
+                              (키링 없는 서버·cron 용)
   FLEX_BASE_URL               기본 https://flex.team
   FLEX_CUSTOMERS              크롤 대상 법인 customerIdHash (콤마 구분)
   FLEX_CRAWL_MODE             incremental(기본) | full
@@ -51,14 +52,17 @@ Env:
   FLEX_AX_AUTO_UPDATE=false   기동 시 자동 업데이트 비활성화`;
 
 const COMMAND_HELP: Record<string, string> = {
-  login: `Usage: flex-ax login [--gui] [--password-stdin]
+  login: `Usage: flex-ax login [--gui | --request-code | --code <코드>]
 
-이메일/비밀번호를 등록합니다.
---gui 를 사용하면 브라우저 대신 플랫폼 기본 대화상자로 입력합니다.
---password-stdin 을 사용하면 stdin 파이프로 비밀번호를 주입할 수 있습니다.`,
+이메일 인증 코드로 로그인하고 세션을 저장합니다 (flex는 2026-11-11부터 비밀번호 로그인 폐지).
+세션은 7일 유효하고, flex-ax 를 실행할 때마다 7일 연장됩니다.
+--gui 를 사용하면 플랫폼 기본 대화상자로 이메일·코드를 입력합니다.
+비대화식(에이전트·서버)에서는 두 단계로 나눕니다:
+  flex-ax login --request-code   # 코드 메일 발송
+  flex-ax login --code 123456    # 5분 안에 받은 코드로 완료`,
   logout: `Usage: flex-ax logout [--gui]
 
-OS 키링에서 저장된 비밀번호를 삭제합니다.
+저장된 로그인 세션(과 예전 버전이 키링에 남긴 비밀번호)을 삭제합니다.
 --gui 를 사용하면 삭제 확인 대화상자를 표시합니다.`,
   status: `Usage: flex-ax status
 

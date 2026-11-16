@@ -12,42 +12,27 @@ export class GuiUnavailableError extends Error {
 
 class GuiCommandMissingError extends GuiUnavailableError {}
 
-export interface GuiCredentials {
-  email: string;
-  password: string;
+export async function promptGuiEmail(defaultEmail: string): Promise<string> {
+  return promptText({ title: "flex-ax login", label: "Email", defaultValue: defaultEmail });
 }
 
-export async function promptGuiCredentials(defaultEmail: string): Promise<GuiCredentials> {
-  const email = (await promptText({
+/** 메일로 받은 인증 코드 입력. 5분 안 1회용이라 가림 처리는 하지 않는다. */
+export async function promptGuiCode(email: string): Promise<string> {
+  const code = (await promptText({
     title: "flex-ax login",
-    label: "Email",
-    defaultValue: defaultEmail,
+    label: `Verification code sent to ${email}`,
+    defaultValue: "",
   })).trim();
-  if (!email) {
-    throw new GuiUnavailableError("이메일 입력이 비어있습니다.");
+  if (!code) {
+    throw new GuiUnavailableError("인증 코드 입력이 비어있습니다.");
   }
-
-  const password = await promptPassword(email);
-  if (!password) {
-    throw new GuiUnavailableError("비밀번호 입력이 비어있습니다.");
-  }
-
-  return { email, password };
-}
-
-export async function confirmGuiOverwrite(email: string): Promise<boolean> {
-  return confirmDialog(
-    "flex-ax login",
-    `An OS keyring credential already exists for ${email}. Replace it?`,
-    "Replace",
-    "Cancel",
-  );
+  return code;
 }
 
 export async function confirmGuiLogout(email: string): Promise<boolean> {
   return confirmDialog(
     "flex-ax logout",
-    `Remove the OS keyring credential for ${email}?`,
+    `Remove the saved flex-ax login session for ${email}?`,
     "Remove",
     "Cancel",
   );
@@ -65,17 +50,6 @@ async function promptText(options: {
       return runPowerShellText(options);
     default:
       return runLinuxText(options);
-  }
-}
-
-async function promptPassword(email: string): Promise<string> {
-  switch (process.platform) {
-    case "darwin":
-      return runAppleScriptPassword(email);
-    case "win32":
-      return runPowerShellPassword(email);
-    default:
-      return runLinuxPassword(email);
   }
 }
 
@@ -109,16 +83,6 @@ on run argv
   return text returned of result
 end run`;
   return runCommand("osascript", ["-e", script, options.title, options.label, options.defaultValue]);
-}
-
-async function runAppleScriptPassword(email: string): Promise<string> {
-  const script = `
-on run argv
-  set emailAddress to item 1 of argv
-  display dialog "Password for " & emailAddress default answer "" with hidden answer with title "flex-ax login" buttons {"Cancel", "OK"} default button "OK" cancel button "Cancel"
-  return text returned of result
-end run`;
-  return runCommand("osascript", ["-e", script, email]);
 }
 
 async function runAppleScriptConfirm(
@@ -161,47 +125,6 @@ $label.Location = New-Object System.Drawing.Point(12, 16)
 $box = New-Object System.Windows.Forms.TextBox
 $box.Text = $payload.defaultValue
 $box.Width = 390
-$box.Location = New-Object System.Drawing.Point(12, 44)
-$ok = New-Object System.Windows.Forms.Button
-$ok.Text = "OK"
-$ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
-$ok.Location = New-Object System.Drawing.Point(246, 86)
-$cancel = New-Object System.Windows.Forms.Button
-$cancel.Text = "Cancel"
-$cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-$cancel.Location = New-Object System.Drawing.Point(327, 86)
-$form.Controls.AddRange(@($label, $box, $ok, $cancel))
-$form.AcceptButton = $ok
-$form.CancelButton = $cancel
-if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($box.Text) } else { exit 1 }
-}`;
-  return runCommand("powershell.exe", [
-    "-NoProfile",
-    "-NonInteractive",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    script,
-  ]);
-}
-
-async function runPowerShellPassword(email: string): Promise<string> {
-  const payload = encodePowerShellPayload({ email });
-  const script = `& {
-$payload = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("${payload}")) | ConvertFrom-Json
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-$form = New-Object System.Windows.Forms.Form
-$form.Text = "flex-ax login"
-$form.StartPosition = "CenterScreen"
-$form.ClientSize = New-Object System.Drawing.Size(420, 130)
-$label = New-Object System.Windows.Forms.Label
-$label.Text = "Password for " + $payload.email
-$label.AutoSize = $true
-$label.Location = New-Object System.Drawing.Point(12, 16)
-$box = New-Object System.Windows.Forms.TextBox
-$box.Width = 390
-$box.UseSystemPasswordChar = $true
 $box.Location = New-Object System.Drawing.Point(12, 44)
 $ok = New-Object System.Windows.Forms.Button
 $ok.Text = "OK"
@@ -273,21 +196,6 @@ async function runLinuxText(options: {
       options.label,
       options.defaultValue,
     ]);
-  }
-}
-
-async function runLinuxPassword(email: string): Promise<string> {
-  try {
-    return await runCommand("zenity", [
-      "--password",
-      "--title",
-      "flex-ax login",
-      "--text",
-      `Password for ${email}`,
-    ]);
-  } catch (error) {
-    if (!isCommandMissing(error)) throw error;
-    return runCommand("kdialog", ["--title", "flex-ax login", "--password", `Password for ${email}`]);
   }
 }
 
