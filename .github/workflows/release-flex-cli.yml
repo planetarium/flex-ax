@@ -67,6 +67,14 @@ jobs:
           mkdir -p artifacts
           bun build --compile --target=${{ matrix.target }} ./apps/flex-cli/src/cli.ts --outfile ./artifacts/${{ matrix.outfile }}
 
+      - name: Sign and verify macOS executable
+        if: runner.os == 'macOS'
+        run: |
+          # Bun's compiled output can retain an invalid linker signature.
+          # Replace it before testing or uploading the final executable.
+          codesign --force --sign - ./artifacts/${{ matrix.outfile }}
+          codesign --verify --strict --verbose=2 ./artifacts/${{ matrix.outfile }}
+
       - name: Smoke test executable
         run: |
           ${{ matrix.smoke }} --version
