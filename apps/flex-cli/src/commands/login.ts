@@ -10,6 +10,7 @@ import {
   loadPending,
   savePending,
   saveSession,
+  withSessionLock,
 } from "../auth/session.js";
 import { GuiUnavailableError, promptGuiCode, promptGuiEmail } from "../gui/dialogs.js";
 
@@ -148,7 +149,9 @@ async function finishLogin(
     saveGlobalConfig({ email: pending.email });
     console.log(`[FLEX-AX:LOGIN] 이메일 저장: ${getGlobalConfigPath()}`);
   }
-  saveSession(pending.email, toStoredSession(result), logger);
+  // 갱신과 같은 잠금 안에서 — 만료 세션을 갱신하다 거절당한 다른 실행이 방금 저장한 새 세션을 지우지 않게
+  const loginResult = result;
+  await withSessionLock(async () => saveSession(pending.email, toStoredSession(loginResult), logger));
   // 비밀번호 로그인 시절 키링에 남긴 비밀번호는 더 쓰지 않는다
   deleteLegacyPassword(pending.email);
   const where = process.env.FLEX_SESSION_FILE ? getSessionFilePath() : "OS 키링(불가 시 세션 파일)";

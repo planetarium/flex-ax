@@ -117,7 +117,7 @@ export async function authenticate(config: Config, logger: Logger): Promise<Auth
   const code = await promptLine(`[FLEX-AX:AUTH] ${email} 로 받은 인증 코드: `);
   if (!code) throw new Error("인증 코드 입력이 비어 있습니다.");
   const result = await verifyEmailCode(pending, code, logger);
-  saveSession(email, toStoredSession(result), logger);
+  await withSessionLock(async () => saveSession(email, toStoredSession(result), logger));
   return result.ctx;
 }
 
