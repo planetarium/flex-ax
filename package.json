@@ -12,9 +12,13 @@
     "dev": "turbo run dev",
     "lint": "turbo run lint",
     "test": "turbo run test",
-    "clean": "turbo run clean"
+    "clean": "turbo run clean",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "test:release": "node --test scripts/release-flex-cli.test.mjs"
   },
   "devDependencies": {
+    "@changesets/cli": "2.31.1",
     "turbo": "^2"
   },
   "engines": {

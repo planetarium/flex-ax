@@ -55,3 +55,8 @@ After downloading:
 4. Run the new executable directly from its installed location.
 
 After this one-time reinstall, `flex-ax update` will use the standalone executable update path.
+
+## 릴리스 기여
+
+CLI 변경 PR에는 `pnpm changeset`으로 변경 요약과 버전 유형을 기록합니다.
+Release PR 승인 및 실패 복구 방법은 [릴리스 가이드](docs/releasing.md)를 참고하세요.
