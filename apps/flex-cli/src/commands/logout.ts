@@ -1,6 +1,6 @@
 import { loadConfig } from "../config/index.js";
 import { createLogger } from "../logger/index.js";
-import { deleteFromKeyring } from "../auth/credentials.js";
+import { deleteLegacyPassword, deleteSession, withSessionLock } from "../auth/session.js";
 import { confirmGuiLogout, GuiUnavailableError } from "../gui/dialogs.js";
 
 export async function runLogout(argv: string[] = process.argv.slice(3)): Promise<void> {
@@ -34,16 +34,20 @@ export async function runLogout(argv: string[] = process.argv.slice(3)): Promise
       throw error;
     }
     if (!confirmed) {
-      console.log("[FLEX-AX:LOGOUT] 취소됨 — 키링 항목을 유지했습니다.");
+      console.log("[FLEX-AX:LOGOUT] 취소됨 — 로그인 세션을 유지했습니다.");
       return;
     }
   }
 
-  const removed = deleteFromKeyring(config.flexEmail);
-  if (removed) {
-    console.log(`[FLEX-AX:LOGOUT] OS 키링 항목 삭제: account=${config.flexEmail}`);
+  // 비밀번호 로그인 시절 키링 항목도 함께 지운다
+  // 진행 중인 갱신이 끝난 뒤 지운다 — 잠금 밖에서 지우면 갱신 결과가 로그아웃 뒤에 다시 저장될 수 있다
+  const email = config.flexEmail;
+  const removedSession = await withSessionLock(async () => deleteSession(email));
+  const removedLegacy = deleteLegacyPassword(email);
+  if (removedSession || removedLegacy) {
+    console.log(`[FLEX-AX:LOGOUT] 로그인 세션 삭제: ${config.flexEmail}`);
   } else {
-    console.log(`[FLEX-AX:LOGOUT] 키링에 저장된 항목 없음: account=${config.flexEmail}`);
+    console.log(`[FLEX-AX:LOGOUT] 저장된 로그인 세션 없음: ${config.flexEmail}`);
   }
   // 이메일은 비밀이 아니므로 글로벌 config에 그대로 둔다.
   // 이메일까지 지우려면 사용자가 직접 ~/.flex-ax/config.json 을 삭제하면 된다.

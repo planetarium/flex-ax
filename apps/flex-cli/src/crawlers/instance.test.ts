@@ -53,7 +53,6 @@ function makeAuth(): AuthContext {
 function makeConfig(): Config {
   return {
     flexEmail: "",
-    flexPassword: "",
     flexBaseUrl: "https://flex.test",
     outputDir: "./output",
     catalogPath: "./output/api-catalog.json",

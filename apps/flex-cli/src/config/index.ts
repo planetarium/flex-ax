@@ -8,11 +8,6 @@ const configSchema = z.object({
    * 프롬프트로 분기 가능해야 하므로 schema 레벨에서 강제하지 않는다).
    */
   flexEmail: z.string().default(""),
-  /**
-   * env에 비밀번호가 직접 들어있으면 우선 사용한다.
-   * 비어있으면 OS 키링 → 대화형 프롬프트 순으로 fallback (auth/credentials.ts).
-   */
-  flexPassword: z.string().default(""),
   flexBaseUrl: z.string().url().default("https://flex.team"),
   outputDir: z.string().default("./output"),
   catalogPath: z.string().default("./output/api-catalog.json"),
@@ -90,7 +85,6 @@ export function loadConfig(): Config {
   const global = loadGlobalConfig();
   return configSchema.parse({
     flexEmail: process.env.FLEX_EMAIL || global.email || undefined,
-    flexPassword: process.env.FLEX_PASSWORD,
     flexBaseUrl: process.env.FLEX_BASE_URL || undefined,
     outputDir: process.env.OUTPUT_DIR || undefined,
     catalogPath: process.env.CATALOG_PATH || undefined,

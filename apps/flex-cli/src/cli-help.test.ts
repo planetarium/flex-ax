@@ -24,7 +24,8 @@ describe("getCommandHelp", () => {
     const help = getCommandHelp("login");
     assert.ok(help);
     assert.match(help, /Usage: flex-ax login/);
-    assert.match(help, /password-stdin/);
+    assert.match(help, /--request-code/);
+    assert.match(help, /--code <코드>/);
   });
 
   it("returns query help with OUTPUT_DIR guidance", () => {

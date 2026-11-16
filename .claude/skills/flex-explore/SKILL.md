@@ -24,16 +24,14 @@ playwright-cli --version    # if missing, see the playwright-cli skill
 
 ## Procedure
 
-### 1) Credentials (macOS Keychain)
+### 1) Email
 
-If flex-ax has authenticated at least once, the password is in the keyring.
+Since 2026-11-11 flex has no password login — every browser login needs a
+one-time code mailed to the account (valid 5 minutes, single use).
 
 ```bash
 EMAIL=$(jq -r .email ~/.flex-ax/config.json)
-PASS=$(security find-generic-password -s flex-ax -a "$EMAIL" -w)
 ```
-
-On other OSes, query the keytar / `@napi-rs/keyring` backend directly.
 
 ### 2) Open the browser and log in
 
@@ -42,9 +40,11 @@ playwright-cli -s=flex open https://flex.team/auth/login --persistent
 ```
 
 flex login is 2-step:
-- fill the email textbox and press Enter → the password form is revealed
-- fill the password and click "로그인하기"
+- fill the email textbox and press Enter → a verification code is mailed
+- ask the user for the code, fill it in
 - redirect to `/home` indicates success
+
+`--persistent` keeps the browser profile, so later sessions usually skip this.
 
 ### 3) Install the XHR hook — the load-bearing step
 
@@ -133,8 +133,8 @@ playwright-cli -s=flex close
 1. **Fetch hooks won't work** — flex uses axios (XHR). Use the XHR hook above.
 2. **Page reload kills the hook** — SPA navigation is fine; only `goto` /
    `reload` matter.
-3. **`security find-generic-password` may prompt the keyring** — once
-   approved, it stays unlocked for the session.
+3. **Login codes expire in 5 minutes** — request the code only when the user
+   is ready to read their mail.
 4. **`playwright-cli upload` rejects paths outside the worktree** — copy the
    file into the working directory first.
 5. **`upload` only works right after a click** — the
