@@ -46,13 +46,17 @@ interface SubmitResponse {
 
 /**
  * 빈 attachments 로 draft를 생성한다. 첫 호출이라 documentKey가 응답으로 내려옴.
+ *
+ * 호출자가 업로드한 임시 fileKey 를 payload.attachments 에 이미 넣어 두므로 여기서 비운다 —
+ * 임시 키를 uploaded:true 로 실으면 서버가 `WORKFLOW_400_024 문서 첨부파일을 찾을 수 없습니다` 로 거부한다
+ * (2026-11-16 실측). 첨부는 이어지는 registerAttachments(uploaded:false)가 등록·영구 키로 바꾼다.
  */
 export async function createDraft(
   authCtx: AuthContext,
   baseUrl: string,
   payload: DocumentPayload,
 ): Promise<{ documentKey: string }> {
-  const body = serializePayload(payload, { uploadedFlag: true });
+  const body = serializePayload({ ...payload, attachments: [] }, { uploadedFlag: true });
   const res = await postJson<DraftCreateResponse>(
     authCtx,
     `${baseUrl}/api/v3/approval-document/approval-documents/draft`,
